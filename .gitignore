@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.Zone.Identifier
+*:Zone.Identifier
+e2e/out/
+public/font/
+public/soundfont/
