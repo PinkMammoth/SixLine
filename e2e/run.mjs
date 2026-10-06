@@ -221,6 +221,38 @@ for (const f of ['fixtures/fixture.gp3', 'fixtures/fixture.gp4']) {
     const rendered = await win.evaluate(() => window.sixline.score.tracks[0].staves[0].bars[1].voices[0].beats[2].duration);
     assert.equal(rendered, 4);
   });
+  await step('tempo spinner changes do not blank the score (no flicker) and undo as one step', async () => {
+    const before = await win.evaluate(() => window.sixline.editor.song.tempo);
+    // record the fewest drawn elements the score surface ever has while the tempo changes
+    // flicker = drawn score sections replaced by blank placeholders mid-render; count the most blanks seen
+    await win.evaluate(() => {
+      const at = document.getElementById('at');
+      const blanks = () => [...(at.querySelector('.at-surface')?.children ?? [])].filter((k) => !k.firstElementChild).length;
+      window.__blank0 = blanks();
+      window.__maxBlank = window.__blank0;
+      window.__obs = new MutationObserver(() => (window.__maxBlank = Math.max(window.__maxBlank, blanks())));
+      window.__obs.observe(at, { childList: true, subtree: true });
+    });
+    await win.focus('#tempo');
+    for (let i = 0; i < 3; i++) {
+      await win.keyboard.press('ArrowUp'); // same as the spinner's up arrow
+      await win.evaluate(() => document.getElementById('tempo').dispatchEvent(new Event('change')));
+      await waitIdle(win);
+    }
+    const r = await win.evaluate(() => {
+      window.__obs.disconnect();
+      return { blank: window.__maxBlank - window.__blank0, tempo: window.sixline.editor.song.tempo, rendered: window.sixline.score.tempo, focus: document.activeElement.id };
+    });
+    assert.equal(r.tempo, before + 3);
+    assert.equal(r.rendered, before + 3);
+    assert.equal(r.blank, 0, `score sections went blank during re-render (${r.blank})`);
+    assert.equal(r.focus, 'tempo', 'tempo box keeps focus while stepping');
+    await win.keyboard.press('Enter');
+    assert.notEqual(await win.evaluate(() => document.activeElement.id), 'tempo', 'Enter returns focus to the score');
+    await win.keyboard.press('Control+z');
+    await waitIdle(win);
+    assert.equal(await win.evaluate(() => window.sixline.editor.song.tempo), before, 'one undo restores the original tempo');
+  });
   await step('Insert adds a beat, Ctrl+Delete removes it', async () => {
     const before = (await state(win)).beats;
     await win.keyboard.press('Insert');

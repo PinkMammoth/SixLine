@@ -1,6 +1,7 @@
 // Bridge between our canonical Song model and alphaTab's Score model.
 // alphaTab is used for GP3/4/5 parsing, engraving, and synth playback; it never owns the document.
 import * as at from '@coderline/alphatab';
+import './alphatabPatches';
 import type { Beat, Duration, MasterBar, Note, NoteEffects, Song, Track, TrackType } from '../model/song';
 import { barTicks, ticksToDurations } from '../model/rhythm';
 

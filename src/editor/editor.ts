@@ -18,6 +18,8 @@ export interface Change {
   firstBar: number;
   /** Bar count / track list / track properties changed. */
   structural: boolean;
+  /** A different document was loaded. */
+  reset?: boolean;
 }
 
 type Scope = { kind: 'measure'; track: number; bar: number } | { kind: 'song' };
@@ -61,7 +63,7 @@ export class Editor {
     this.redoStack = [];
     this.cursor = { track: 0, bar: 0, beat: 0, string: song.tracks[0] ? this.defaultRow(song.tracks[0]) : 0 };
     this.dirty = false;
-    this.emit({ firstBar: 0, structural: true });
+    this.emit({ firstBar: 0, structural: true, reset: true });
     this.emitCursor();
   }
 
@@ -493,8 +495,13 @@ export class Editor {
   }
 
   /** Generic song-level mutation (track settings, tempo, time signature...). */
-  songEdit(label: string, fn: (s: Song) => void) {
-    this.edit(label, 'song', fn);
+  songEdit(label: string, fn: (s: Song) => void, opts: { merge?: boolean } = {}) {
+    this.edit(label, 'song', fn, opts);
+  }
+
+  /** Label of the most recent undoable edit (for merging repeated steps such as tempo spinner clicks). */
+  get lastUndoLabel(): string | undefined {
+    return this.undoStack[this.undoStack.length - 1]?.label;
   }
 }
 

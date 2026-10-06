@@ -25,6 +25,9 @@ let score: at.model.Score | null = null;
 let renderedTrack = -1;
 let pendingFirstBar: number | null = null;
 let pendingStructural = false;
+let pendingReset = false;
+/** Track count and bar count of the last rendered score; alphaTab can only redraw in place if unchanged. */
+let renderedShape = '';
 let renderQueued = false;
 let rendering = false;
 let renderStart = 0;
@@ -92,6 +95,7 @@ api.error.on((e) => {
 editor.onChange((c) => {
   pendingFirstBar = pendingFirstBar === null ? c.firstBar : Math.min(pendingFirstBar, c.firstBar);
   pendingStructural ||= c.structural;
+  pendingReset ||= !!c.reset;
   scheduleRender();
 });
 editor.onCursor(() => {
@@ -113,7 +117,17 @@ function flushRender() {
   const track = editor.cursor.track;
   const docChanged = !score || pendingStructural || pendingFirstBar !== null;
   const incremental = track === renderedTrack && !pendingStructural && pendingFirstBar !== null;
-  const hints = incremental ? { reuseViewport: true, firstChangedMasterBar: pendingFirstBar! } : undefined;
+  // Same document, track and shape (e.g. tempo, time signature, mixer changes): keep the current drawing on
+  // screen while re-rendering instead of blanking it (flicker). alphaTab cannot do this across layout changes.
+  const shape = `${editor.song.tracks.length}:${editor.song.masterBars.length}`;
+  const sameLayout = track === renderedTrack && !pendingReset && shape === renderedShape;
+  const hints = incremental
+    ? { reuseViewport: true, firstChangedMasterBar: pendingFirstBar! }
+    : sameLayout
+      ? { reuseViewport: true, firstChangedMasterBar: 0 }
+      : undefined;
+  renderedShape = shape;
+  pendingReset = false;
   pendingFirstBar = null;
   pendingStructural = false;
   // Only a document change needs a new alphaTab Score. Showing another track re-renders the same Score,
@@ -450,8 +464,16 @@ function buildToolbar() {
   const tempo = $<HTMLInputElement>('tempo');
   tempo.onchange = () => {
     const v = Math.max(20, Math.min(400, Number(tempo.value) || 120));
-    editor.songEdit('Tempo', (s) => (s.tempo = v));
-    tempo.blur();
+    if (v === editor.song.tempo) return;
+    // consecutive tempo steps (spinner clicks) are one undo step
+    editor.songEdit('Tempo', (s) => (s.tempo = v), { merge: editor.lastUndoLabel === 'Tempo' });
+  };
+  tempo.onkeydown = (e) => {
+    if (e.key === 'Enter' || e.key === 'Escape') {
+      if (e.key === 'Escape') tempo.value = String(editor.song.tempo);
+      else tempo.dispatchEvent(new Event('change'));
+      tempo.blur();
+    }
   };
   // buttons must not keep keyboard focus (Space would re-click them)
   tb.querySelectorAll('button').forEach((b) => b.addEventListener('mouseup', () => b.blur()));

@@ -229,3 +229,40 @@ describe('MIDI export of drum and keys edits', () => {
     expect(got.filter((n) => n.track === 1).map((n) => [n.key, n.start, n.dur])).toEqual([[60, 0, 1920], [63, 0, 1920]]);
   });
 });
+
+describe('alphaTab generator patches', () => {
+  /** Pitch-bend events (tick, value) on channel 0 of the exported file. */
+  function bends(song: Song) {
+    const p = parseMidi(exportMidi(song));
+    const out: [number, number][] = [];
+    let t = 0;
+    for (const e of p.tracks[0] as any[]) {
+      t += e.deltaTime;
+      if (e.type === 'pitchBend') out.push([t, e.value]);
+    }
+    return out;
+  }
+  const bentSong = (tremolo?: number) => {
+    const s = createSong({ bars: 1 });
+    s.tracks[0].measures[0].voices[0] = [
+      { duration: 2, dots: 0, ...(tremolo ? { tremolo } : {}), notes: [{ string: 1, fret: 7, velocity: 95, fx: { bend: [{ offset: 0, value: 0 }, { offset: 60, value: 4 }] } }] },
+      { duration: 2, dots: 0, notes: [] },
+    ];
+    return s;
+  };
+
+  it('tremolo-picked notes keep their bend (alphaTab skips it)', () => {
+    const plain = bends(bentSong());
+    const trem = bends(bentSong(2));
+    const rising = (b: [number, number][]) => b.filter(([t]) => t < 1920).map(([, v]) => v);
+    expect(rising(plain).length).toBeGreaterThan(3);
+    expect(rising(trem)).toEqual(rising(plain)); // same pitch curve
+    expect(Math.max(...rising(trem))).toBeGreaterThan(rising(trem)[0]);
+    // and the note is re-struck exactly as an unbent tremolo note
+    const unbent = bentSong(2);
+    delete unbent.tracks[0].measures[0].voices[0][0].notes[0].fx;
+    const starts = (song: Song) => fileNotes(exportMidi(song)).map((n) => n.start);
+    expect(starts(bentSong(2))).toEqual(starts(unbent));
+    expect(starts(unbent).length).toBeGreaterThan(2);
+  });
+});
