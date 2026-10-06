@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
+import { parseMidi } from 'midi-file';
 
 const root = path.resolve(import.meta.dirname, '..');
 const out = path.join(root, 'e2e/out');
@@ -310,6 +311,63 @@ console.log('Milestone 2: new songs');
     const sigs = await win.evaluate(() => window.tabedit.editor.song.masterBars.map((m) => m.num + '/' + m.den));
     assert.deepEqual(sigs, ['3/4', '3/4', '5/8', '5/8', '5/8', '5/8']);
     await win.screenshot({ path: path.join(out, 'm2-new-song.png') });
+  });
+  await step('no page errors', async () => assert.deepEqual(errors, []));
+  await app.close();
+}
+
+// ---------------------------------------------------------------------------------------------
+console.log('Milestone 4: MIDI export');
+{
+  const priv = path.join(root, 'gp5-examples/Tower10.gp5');
+  const src = fs.existsSync(priv) ? priv : path.join(root, 'fixtures/fixture.gp5');
+  if (src !== priv) console.log('       (private gp5-examples/Tower10.gp5 absent; using fixtures/fixture.gp5)');
+  const { app, win, errors } = await launch(src);
+  await step(`edit ${path.basename(src)} tab, File > Export MIDI, parse result independently`, async () => {
+    const bar = await win.evaluate((from) => {
+      const ms = window.tabedit.editor.song.tracks[0].measures;
+      for (let i = from; i < ms.length; i++) if (ms[i].voices[0].length >= 2) return i;
+      return -1;
+    }, src === priv ? 100 : 0);
+    assert.ok(bar >= 0, 'no bar with two beats');
+    await win.evaluate((bar) => window.tabedit.editor.setCursor({ track: 0, bar, beat: 0, string: 0 }), bar);
+    await waitIdle(win);
+    const p = await tabPoint(win, bar, 1, 0); // click 2nd beat, top string
+    await win.mouse.click(p.x, p.y);
+    await win.keyboard.press('1');
+    await win.keyboard.press('9');
+    await waitIdle(win);
+    const exp = await win.evaluate(() => {
+      const t = window.tabedit;
+      const c = t.editor.cursor;
+      const beat = t.score.tracks[0].staves[0].bars[c.bar].voices[0].beats[c.beat];
+      return { cursor: c, key: t.editor.track.tuning[0] + 19, tick: t.score.masterBars[c.bar].start + beat.playbackStart, dur: beat.playbackDuration };
+    });
+    assert.equal(exp.cursor.beat, 1, `click at ${JSON.stringify(p)} bar ${bar} gave ${JSON.stringify(exp.cursor)}, viewport ${JSON.stringify(win.viewportSize())}`);
+    const outFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'tabedit-mid-')), 'export.mid');
+    await app.evaluate(({ dialog }, f) => {
+      dialog.showSaveDialog = async () => ({ canceled: false, filePath: f });
+    }, outFile);
+    await win.locator('.menu .title', { hasText: 'File' }).dispatchEvent('mousedown');
+    await win.locator('.menu.open .item', { hasText: 'Export MIDI' }).dispatchEvent('mousedown');
+    await win.waitForFunction(() => document.getElementById('msg')?.textContent.includes('Exported MIDI'), null, { timeout: 10000 });
+    const midi = parseMidi(fs.readFileSync(outFile));
+    assert.equal(midi.header.format, 1);
+    assert.equal(midi.tracks.length, await win.evaluate(() => window.tabedit.editor.song.tracks.length));
+    // find the edited note in track 0
+    let t = 0;
+    const ons = [];
+    const offs = new Map();
+    for (const e of midi.tracks[0]) {
+      t += e.deltaTime;
+      if (e.type === 'noteOn' && e.velocity > 0) ons.push({ t, key: e.noteNumber, ch: e.channel });
+      else if ((e.type === 'noteOff' || e.type === 'noteOn') && e.noteNumber === exp.key && !offs.has(t)) offs.set(e.noteNumber + ':' + ons.filter((o) => o.key === e.noteNumber).at(-1)?.t, t);
+    }
+    const hit = ons.find((o) => o.key === exp.key && o.t === exp.tick);
+    assert.ok(hit, `edited note key ${exp.key} at tick ${exp.tick} not found in exported MIDI`);
+    const end = offs.get(exp.key + ':' + exp.tick);
+    assert.ok(end !== undefined && Math.abs(end - exp.tick - exp.dur) <= 1, `duration ${end - exp.tick} != ${exp.dur}`);
+    console.log(`       edited note: key ${exp.key} tick ${exp.tick} dur ${exp.dur} ch ${hit.ch}; ${ons.length} notes in track 0`);
   });
   await step('no page errors', async () => assert.deepEqual(errors, []));
   await app.close();

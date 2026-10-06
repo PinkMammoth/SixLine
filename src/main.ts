@@ -4,6 +4,7 @@ import { Editor } from './editor/editor';
 import { createSong, isStringed, type Duration, type Song } from './model/song';
 import { loadGpBytes, songToScore } from './io/alphatab';
 import { parseProject, serializeProject } from './io/project';
+import { exportMidi } from './io/midiExport';
 import { initialFile, openFile, saveFile, type OpenedFile } from './platform/host';
 import { buildMenus, type MenuDef } from './ui/menu';
 import { locateCaret } from './ui/caret';
@@ -43,7 +44,8 @@ const api = new at.AlphaTabApi($('at'), {
     scrollElement: $('score'),
     enableCursor: true,
     enableUserInteraction: true,
-    scrollMode: at.ScrollMode.Continuous,
+    // auto-scroll follows playback only while playing; otherwise the view follows the edit caret
+    scrollMode: at.ScrollMode.Off,
   },
 } as any);
 
@@ -59,6 +61,11 @@ api.renderFinished.on(() => {
 });
 api.playerStateChanged.on((e) => {
   playerState = e.state;
+  const mode = e.state === 1 ? at.ScrollMode.Continuous : at.ScrollMode.Off;
+  if (api.settings.player.scrollMode !== mode) {
+    api.settings.player.scrollMode = mode;
+    api.updateSettings();
+  }
   updateToolbar();
 });
 api.playerPositionChanged.on((e) => {
@@ -197,6 +204,17 @@ function loadFile(f: OpenedFile) {
   }
 }
 
+async function doExportMidi() {
+  try {
+    const data = exportMidi(editor.song, api.settings);
+    const p = await saveFile(null, data, fileName.replace(/\.tabproj$/, '') + '.mid', [{ name: 'Standard MIDI File', extensions: ['mid', 'midi'] }]);
+    if (p) setMessage('Exported MIDI ' + p.split(/[\\/]/).pop());
+  } catch (e) {
+    console.error(e);
+    setMessage('MIDI export failed: ' + (e as Error).message);
+  }
+}
+
 async function doSave(as = false) {
   const data = new TextEncoder().encode(serializeProject(editor.song));
   const p = await saveFile(as ? null : filePath, data, fileName, [PROJ_FILTER]);
@@ -253,6 +271,7 @@ window.addEventListener('keydown', (e) => {
     if (lk === 'z' && !e.shiftKey) editor.undo();
     else if ((lk === 'z' && e.shiftKey) || lk === 'y') editor.redo();
     else if (lk === 's') doSave(e.shiftKey);
+    else if (lk === 'e') doExportMidi();
     else if (lk === 'o') doOpen();
     else if (lk === 'n') doNew();
     else if (k === 'ArrowRight') editor.moveBar(1);
@@ -294,6 +313,8 @@ const menus: MenuDef[] = [
       { label: 'Open…', key: 'Ctrl+O', run: doOpen },
       { label: 'Save', key: 'Ctrl+S', run: () => doSave() },
       { label: 'Save As…', key: 'Ctrl+Shift+S', run: () => doSave(true) },
+      null,
+      { label: 'Export MIDI…', key: 'Ctrl+E', run: doExportMidi },
     ],
   },
   {
