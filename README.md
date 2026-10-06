@@ -49,4 +49,4 @@ Clicking in the score moves both the edit caret and the playback position. Click
 
 ## Fixtures
 
-`fixtures/fixture.gp{3,4,5}` are trivial original riffs generated with PyGuitarPro (`scripts/make_fixtures.py`). If GP5 files are present in `gp5-examples/`, the round-trip tests use them too.
+`fixtures/fixture.gp{3,4,5}` are trivial original riffs generated with PyGuitarPro (`scripts/make_fixtures.py`). Private GP3/GP4/GP5 files can be placed in `gp5-examples/`. They are git-ignored, and tests use them when present and skip them when absent (see `gp5-examples/README.md`).

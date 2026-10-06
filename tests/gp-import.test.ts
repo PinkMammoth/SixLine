@@ -6,8 +6,10 @@ import { loadGpBytes } from '../src/io/alphatab';
 import { fixture, playedNotes, root, songNotes } from './helpers';
 
 const fixtures = ['fixtures/fixture.gp3', 'fixtures/fixture.gp4', 'fixtures/fixture.gp5'];
-const examples = fs.existsSync(path.join(root, 'gp5-examples'))
-  ? fs.readdirSync(path.join(root, 'gp5-examples')).filter((f) => f.endsWith('.gp5')).map((f) => 'gp5-examples/' + f)
+// Optional private fixtures (git-ignored); tests use them when present.
+const privateDir = path.join(root, 'gp5-examples');
+const examples = fs.existsSync(privateDir)
+  ? fs.readdirSync(privateDir).filter((f) => /\.gp[345]$/i.test(f)).map((f) => 'gp5-examples/' + f)
   : [];
 
 describe('GP import', () => {

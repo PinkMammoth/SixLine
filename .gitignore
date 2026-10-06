@@ -5,3 +5,7 @@ dist/
 e2e/out/
 public/font/
 public/soundfont/
+
+# Private compatibility fixtures: keep local, never commit (only the README is tracked)
+gp5-examples/*
+!gp5-examples/README.md
