@@ -7,6 +7,7 @@ import { parseProject, serializeProject } from './io/project';
 import { initialFile, openFile, saveFile, type OpenedFile } from './platform/host';
 import { buildMenus, type MenuDef } from './ui/menu';
 import { locateCaret } from './ui/caret';
+import { newSongDialog, timeSignatureDialog, trackDialog } from './ui/dialogs';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -207,11 +208,24 @@ async function doSave(as = false) {
   updateStatus();
 }
 
-function doNew() {
+async function doNew() {
+  const o = await newSongDialog();
+  if (!o) return;
   api.stop();
   filePath = null;
-  fileName = 'Untitled.tabproj';
-  editor.load(createSong({ tracks: ['guitar'] }));
+  fileName = o.title.replace(/[\\/:*?"<>|]/g, '_') + '.tabproj';
+  editor.load(createSong({ title: o.title, tempo: o.tempo, num: o.num, den: o.den, bars: o.bars, tracks: [o.type] }));
+}
+
+async function editTrack(i = editor.cursor.track) {
+  const props = await trackDialog(editor.song.tracks[i]);
+  if (props) editor.setTrackProps(i, props);
+}
+
+async function editTimeSignature() {
+  const mb = editor.song.masterBars[editor.cursor.bar];
+  const r = await timeSignatureDialog(mb.num, mb.den);
+  if (r) editor.setTimeSignature(r.num, r.den);
 }
 
 // ------------------------------------------------------------------ playback
@@ -265,6 +279,7 @@ window.addEventListener('keydown', (e) => {
   else if (k === '.') editor.toggleDot();
   else if (k === 't' || k === 'T') editor.toggleTriplet();
   else if (k === 'Escape') closeMenus();
+  else if (k === 'F6') editTrack();
   else handled = false;
   if (handled) e.preventDefault();
 });
@@ -294,6 +309,20 @@ const menus: MenuDef[] = [
       { label: 'Insert bar', key: 'Ctrl+Ins', run: () => editor.insertBars(editor.cursor.bar, 1) },
       { label: 'Append bar', run: () => editor.insertBars(editor.song.masterBars.length, 1) },
       { label: 'Delete bar', run: () => editor.deleteBar() },
+    ],
+  },
+  {
+    title: 'Track',
+    items: [
+      { label: 'Add guitar track', run: () => editor.addTrack('guitar') },
+      { label: 'Add bass track', run: () => editor.addTrack('bass') },
+      { label: 'Add keys/synth track', run: () => editor.addTrack('keys') },
+      { label: 'Add drum track', run: () => editor.addTrack('drums') },
+      null,
+      { label: 'Track properties…', key: 'F6', run: () => editTrack() },
+      { label: 'Remove track', run: () => editor.removeTrack(), enabled: () => editor.song.tracks.length > 1 },
+      null,
+      { label: 'Time signature…', run: editTimeSignature },
     ],
   },
   {
@@ -336,6 +365,8 @@ function buildToolbar() {
   tb.querySelectorAll<HTMLButtonElement>('[data-dur]').forEach((b) => (b.onclick = () => editor.setDuration(Number(b.dataset.dur) as Duration)));
   const seek = $<HTMLInputElement>('seek');
   seek.oninput = () => (api.timePosition = Number(seek.value));
+  $('tsig').onclick = editTimeSignature;
+  $('tsig').title = 'Time signature (click to change)';
   const tempo = $<HTMLInputElement>('tempo');
   tempo.onchange = () => {
     const v = Math.max(20, Math.min(400, Number(tempo.value) || 120));
@@ -372,6 +403,9 @@ function renderTracks() {
     const kind = { guitar: 'G', bass: 'B', keys: 'K', drums: 'D' }[t.type];
     row.innerHTML = `<span class="kind">${kind}</span><span class="name"></span><span class="ms m ${t.mute ? 'on' : ''}" title="Mute">M</span><span class="ms s ${t.solo ? 'on' : ''}" title="Solo">S</span>`;
     row.querySelector('.name')!.textContent = t.name;
+    row.ondblclick = (ev) => {
+      if (!(ev.target as HTMLElement).classList.contains('ms')) editTrack(i);
+    };
     row.onclick = (ev) => {
       const target = ev.target as HTMLElement;
       if (target.classList.contains('m')) return toggleMix(i, 'mute');

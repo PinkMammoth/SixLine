@@ -1,6 +1,6 @@
 // Editor state + command execution with snapshot-based undo/redo.
 // All document mutation goes through Editor.edit(); UI code never mutates the Song directly.
-import { emptyMeasure, isStringed, type Beat, type Duration, type Measure, type Song } from '../model/song';
+import { createTrack, emptyMeasure, isStringed, type Beat, type Duration, type Measure, type Song, type Track, type TrackType } from '../model/song';
 import { barTicks, beatTicks, voiceTicks } from '../model/rhythm';
 
 export interface Cursor {
@@ -369,6 +369,53 @@ export class Editor {
         this.cursor.beat = 0;
       },
       { firstBar: at },
+    );
+  }
+
+  // ------------------------------------------------------------ tracks
+
+  addTrack(type: TrackType) {
+    this.edit('Add track', 'song', (s) => {
+      const n = s.tracks.filter((t) => t.type === type).length;
+      const t = createTrack(type, s.masterBars.length);
+      if (n) t.name += ' ' + (n + 1);
+      s.tracks.push(t);
+      this.cursor = { track: s.tracks.length - 1, bar: this.cursor.bar, beat: 0, string: 0 };
+    });
+  }
+
+  removeTrack(index = this.cursor.track) {
+    if (this.song.tracks.length <= 1) return;
+    this.edit('Remove track', 'song', (s) => {
+      s.tracks.splice(index, 1);
+      this.cursor.beat = 0;
+    });
+  }
+
+  /** Update track properties. Changing the string count drops notes on removed strings. */
+  setTrackProps(index: number, props: Partial<Pick<Track, 'name' | 'program' | 'tuning' | 'capo' | 'volume' | 'pan'>>) {
+    this.edit('Track properties', 'song', (s) => {
+      const t = s.tracks[index];
+      Object.assign(t, props);
+      if (props.tuning)
+        for (const m of t.measures) for (const v of m.voices) for (const b of v) b.notes = b.notes.filter((n) => n.string === undefined || n.string < t.tuning.length);
+    });
+  }
+
+  /** Set the time signature from `bar` onwards, up to the next bar that had a different signature. */
+  setTimeSignature(num: number, den: number, bar = this.cursor.bar) {
+    this.edit(
+      `Time signature ${num}/${den}`,
+      'song',
+      (s) => {
+        const old = s.masterBars[bar];
+        const [on, od] = [old.num, old.den];
+        for (let i = bar; i < s.masterBars.length && s.masterBars[i].num === on && s.masterBars[i].den === od; i++) {
+          s.masterBars[i].num = num;
+          s.masterBars[i].den = den;
+        }
+      },
+      { firstBar: bar },
     );
   }
 

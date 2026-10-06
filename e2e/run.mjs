@@ -242,6 +242,80 @@ for (const f of ['fixtures/fixture.gp3', 'fixtures/fixture.gp4']) {
 }
 
 // ---------------------------------------------------------------------------------------------
+console.log('Milestone 2: new songs');
+{
+  const { app, win, errors } = await launch(path.join(root, 'fixtures/fixture.gp3'));
+  await step('Ctrl+N opens the new-song dialog and creates an editable bass song', async () => {
+    await win.keyboard.press('Control+n');
+    await win.waitForSelector('dialog[open]');
+    await win.fill('#f-title', 'My Bass Line');
+    await win.selectOption('#f-type', 'bass');
+    await win.fill('#f-tempo', '90');
+    await win.fill('#f-num', '3');
+    await win.fill('#f-bars', '6');
+    await win.click('dialog button[value=ok]');
+    await waitIdle(win);
+    const s = await win.evaluate(() => {
+      const song = window.tabedit.editor.song;
+      return { title: song.title, tempo: song.tempo, bars: song.masterBars.length, sig: song.masterBars[0].num + '/' + song.masterBars[0].den, tracks: song.tracks.map((t) => [t.type, t.tuning.length]) };
+    });
+    assert.deepEqual(s, { title: 'My Bass Line', tempo: 90, bars: 6, sig: '3/4', tracks: [['bass', 4]] });
+    await win.keyboard.press('ArrowDown');
+    await win.keyboard.press('ArrowDown');
+    await win.keyboard.press('ArrowDown');
+    await win.keyboard.press('ArrowDown'); // clamps at string 4
+    await win.keyboard.press('3');
+    await waitIdle(win);
+    const n = await win.evaluate(() => window.tabedit.score.tracks[0].staves[0].bars[0].voices[0].beats[0].notes.map((n) => [n.string, n.fret, n.realValue]));
+    assert.deepEqual(n, [[1, 3, 31]]); // low E (28) + 3 = G (31)
+  });
+  await step('Track menu adds drum and keys tracks; Remove track works', async () => {
+    const menu = async (title, item) => {
+      await win.locator('.menu .title', { hasText: title }).dispatchEvent('mousedown');
+      await win.locator('.menu.open .item', { hasText: item }).dispatchEvent('mousedown');
+    };
+    await menu('Track', 'Add drum track');
+    await menu('Track', 'Add keys/synth track');
+    await waitIdle(win);
+    assert.deepEqual(await win.locator('.trk .name').allTextContents(), ['Bass', 'Drums', 'Keys']);
+    await menu('Track', 'Remove track');
+    await waitIdle(win);
+    assert.deepEqual(await win.locator('.trk .name').allTextContents(), ['Bass', 'Drums']);
+    await win.locator('.trk').nth(0).click();
+    await waitIdle(win);
+  });
+  await step('track properties dialog changes tuning (preset) and name', async () => {
+    await win.keyboard.press('F6');
+    await win.waitForSelector('dialog[open]');
+    await win.fill('#f-name', 'Low Bass');
+    await win.focus('#f-preset');
+    await win.selectOption('#f-preset', 'Bass 5-string');
+    assert.equal(await win.inputValue('#f-tuning'), 'G2 D2 A1 E1 B0');
+    await win.click('dialog button[value=ok]');
+    await waitIdle(win);
+    const t = await win.evaluate(() => window.tabedit.editor.song.tracks[0]);
+    assert.equal(t.name, 'Low Bass');
+    assert.deepEqual(t.tuning, [43, 38, 33, 28, 23]);
+    const lines = await win.evaluate(() => window.tabedit.score.tracks[0].staves[0].tuning.length);
+    assert.equal(lines, 5);
+  });
+  await step('time signature dialog changes the bar and the following bars', async () => {
+    await win.evaluate(() => window.tabedit.editor.setCursor({ bar: 2 }));
+    await win.click('#tsig');
+    await win.waitForSelector('dialog[open]');
+    await win.fill('#f-num', '5');
+    await win.selectOption('#f-den', '8');
+    await win.click('dialog button[value=ok]');
+    await waitIdle(win);
+    const sigs = await win.evaluate(() => window.tabedit.editor.song.masterBars.map((m) => m.num + '/' + m.den));
+    assert.deepEqual(sigs, ['3/4', '3/4', '5/8', '5/8', '5/8', '5/8']);
+    await win.screenshot({ path: path.join(out, 'm2-new-song.png') });
+  });
+  await step('no page errors', async () => assert.deepEqual(errors, []));
+  await app.close();
+}
+
+// ---------------------------------------------------------------------------------------------
 console.log('Persistence + large file');
 await step('edit a .tabproj and Ctrl+S saves it in place', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tabedit-'));

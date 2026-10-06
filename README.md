@@ -43,8 +43,9 @@ npm run test:e2e  # builds, then drives the real Electron app with Playwright
 | Space | play / pause |
 | Ctrl+Z, Ctrl+Y / Ctrl+Shift+Z | undo, redo |
 | Ctrl+N / Ctrl+O / Ctrl+S / Ctrl+Shift+S | new, open, save, save as |
+| F6 (or double-click a track) | track properties (name, MIDI program, tuning presets, capo, volume, pan) |
 
-Clicking in the score moves both the edit caret and the playback position.
+Clicking in the score moves both the edit caret and the playback position. Click the time signature in the toolbar to change it from the current bar on. Add or remove tracks from the Track menu.
 
 ## Fixtures
 

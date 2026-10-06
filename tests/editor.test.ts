@@ -146,3 +146,38 @@ describe('editor rhythm and structure', () => {
     expect(changes).toEqual([1]);
   });
 });
+
+describe('tracks and song structure', () => {
+  it('adds and removes tracks with matching bar counts and default tunings', () => {
+    const e = new Editor(createSong({ bars: 3 }));
+    e.addTrack('bass');
+    e.addTrack('drums');
+    e.addTrack('guitar');
+    expect(e.song.tracks.map((t) => t.name)).toEqual(['Guitar', 'Bass', 'Drums', 'Guitar 2']);
+    expect(e.song.tracks[1].tuning).toEqual([43, 38, 33, 28]);
+    expect(e.song.tracks[2].tuning).toEqual([]);
+    expect(e.song.tracks.every((t) => t.measures.length === 3)).toBe(true);
+    expect(e.cursor.track).toBe(3);
+    e.removeTrack(0);
+    expect(e.song.tracks.map((t) => t.name)).toEqual(['Bass', 'Drums', 'Guitar 2']);
+    e.undo();
+    expect(e.song.tracks).toHaveLength(4);
+  });
+
+  it('changing tuning to fewer strings drops notes on removed strings', () => {
+    const e = new Editor(createSong());
+    e.setCursor({ string: 5 });
+    e.setFret(3);
+    e.setCursor({ string: 0 });
+    e.setFret(1);
+    e.setTrackProps(0, { tuning: [43, 38, 33, 28] });
+    expect(e.song.tracks[0].measures[0].voices[0][0].notes).toEqual([{ string: 0, fret: 1, velocity: 95 }]);
+  });
+
+  it('sets time signatures over the following run of equal bars', () => {
+    const e = new Editor(createSong({ bars: 4 }));
+    e.setTimeSignature(3, 4, 2);
+    e.setTimeSignature(7, 8, 0);
+    expect(e.song.masterBars.map((m) => `${m.num}/${m.den}`)).toEqual(['7/8', '7/8', '3/4', '3/4']);
+  });
+});
