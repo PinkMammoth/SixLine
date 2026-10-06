@@ -39,6 +39,12 @@ async function until(fn, seconds = 60) {
   return fn();
 }
 
+/** Close the app, discarding unsaved edits (tests leave edited tabs open; the quit prompt is tested separately). */
+async function closeApp(app, win) {
+  await win.evaluate(() => window.sixline.docs.forEach((d) => (d.editor.dirty = false))).catch(() => {});
+  await app.close();
+}
+
 let failures = 0;
 async function step(name, fn) {
   try {
@@ -188,7 +194,7 @@ let edited = null;
     assert.equal(doc.format, 'tabproj');
   });
   await step('no page errors', async () => assert.deepEqual(errors, []));
-  await app.close();
+  await closeApp(app, win);
 }
 {
   await sleep(1000);
@@ -218,7 +224,7 @@ let edited = null;
     assert.equal(windows, 1, 'one SixLine window');
   });
   await step('no page errors', async () => assert.deepEqual(errors, []));
-  await app.close();
+  await closeApp(app, win);
 }
 
 // ---------------------------------------------------------------------------------------------

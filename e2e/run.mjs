@@ -12,6 +12,12 @@ const out = path.join(root, 'e2e/out');
 fs.mkdirSync(out, { recursive: true });
 const electronBin = path.join(root, 'node_modules/electron/dist/electron');
 
+/** Close the app, discarding unsaved edits (tests leave edited tabs open; the quit prompt is tested separately). */
+async function closeApp(app, win) {
+  await win.evaluate(() => window.sixline.docs.forEach((d) => (d.editor.dirty = false))).catch(() => {});
+  await app.close();
+}
+
 let failures = 0;
 async function step(name, fn) {
   try {
@@ -70,7 +76,7 @@ for (const f of ['fixtures/fixture.gp3', 'fixtures/fixture.gp4']) {
     const tracks = await win.locator('.trk .name').allTextContents();
     assert.deepEqual(tracks, ['Guitar', 'Bass', 'Drums']);
     assert.deepEqual(errors, []);
-    await app.close();
+    await closeApp(app, win);
   });
 }
 
@@ -283,7 +289,7 @@ for (const f of ['fixtures/fixture.gp3', 'fixtures/fixture.gp4']) {
     await win.waitForFunction(() => window.sixline.playerState === 0, null, { timeout: 5000 });
   });
   await step('no page errors', async () => assert.deepEqual(errors, []));
-  await app.close();
+  await closeApp(app, win);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -357,7 +363,7 @@ console.log('Milestone 2: new songs');
     await win.screenshot({ path: path.join(out, 'm2-new-song.png') });
   });
   await step('no page errors', async () => assert.deepEqual(errors, []));
-  await app.close();
+  await closeApp(app, win);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -480,7 +486,7 @@ console.log('Milestone 3: drum and keys entry');
     assert.deepEqual(notes.filter((n) => n.track === 1).map((n) => `${n.key}@${n.t}`).sort(), ['60@0', '62@1920', '64@0', '65@1920', '66@0'].sort());
   });
   await step('no page errors', async () => assert.deepEqual(errors, []));
-  await app.close();
+  await closeApp(app, win);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -537,7 +543,7 @@ console.log('Milestone 4: MIDI export');
     console.log(`       edited note: key ${exp.key} tick ${exp.tick} dur ${exp.dur} ch ${hit.ch}; ${ons.length} notes in track 0`);
   });
   await step('no page errors', async () => assert.deepEqual(errors, []));
-  await app.close();
+  await closeApp(app, win);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -660,7 +666,102 @@ console.log('Milestone 5: MIDI import');
     assert.deepEqual(meta.sort(), ['sig 3/4@11520', 'sig 4/4@0', 'sig 6/8@17280', 'tempo 100@0', 'tempo 140@7680'].sort());
   });
   await step('no page errors', async () => assert.deepEqual(errors, []));
-  await app.close();
+  await closeApp(app, win);
+}
+
+// ---------------------------------------------------------------------------------------------
+console.log('Documents: tabs');
+{
+  const { app, win, errors } = await launch(path.join(root, 'fixtures/fixture.gp5'));
+  const tabs = () => win.locator('#doctabs .dtab .dname').allTextContents();
+  const openVia = async (file) => {
+    await app.evaluate(({ dialog }, f) => {
+      dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [f] });
+    }, file);
+    await win.evaluate(() => (window.__prevActive = window.sixline.active));
+    await win.keyboard.press('Control+o');
+    await win.waitForFunction(() => window.sixline.active !== window.__prevActive, null, { timeout: 15000 });
+    await waitIdle(win);
+  };
+  await step('opening another file adds a tab and keeps the current one (with its edits)', async () => {
+    await win.evaluate(() => window.sixline.editor.setCursor({ track: 1, bar: 1, beat: 0, string: 0 }));
+    await win.keyboard.press('7');
+    await openVia(path.join(root, 'fixtures/fixture.gp3'));
+    assert.deepEqual(await tabs(), ['fixture *', 'fixture']);
+    await win.locator('#doctabs .dtab').nth(0).click();
+    await waitIdle(win);
+    const r = await win.evaluate(() => ({ track: window.sixline.editor.cursor.track, fret: window.sixline.editor.song.tracks[1].measures[1].voices[0][0].notes.find((n) => n.string === 0)?.fret, rendered: window.sixline.api.tracks[0].name }));
+    assert.deepEqual(r, { track: 1, fret: 7, rendered: 'Bass' }, 'first tab kept its edit, cursor and selected track');
+  });
+  const activeIndex = () => win.evaluate(() => window.sixline.docs.indexOf(window.sixline.active));
+  await step('Ctrl+Tab cycles tabs; opening a file that is already open focuses its tab', async () => {
+    await openVia(path.join(root, 'fixtures/fixture.gp4'));
+    assert.equal((await tabs()).length, 3);
+    for (const k of ['Control+Tab', 'Control+Tab', 'Control+Shift+Tab']) {
+      const i = await activeIndex();
+      await win.keyboard.press(k);
+      await waitIdle(win);
+      assert.equal(await activeIndex(), (i + (k.includes('Shift') ? -1 : 1) + 3) % 3, k);
+    }
+    // a saved project opened again stays one tab
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sixline-tabs-'));
+    const proj = path.join(tmp, 'once.tabproj');
+    await app.evaluate(({ dialog }, f) => {
+      dialog.showSaveDialog = async () => ({ canceled: false, filePath: f });
+    }, proj);
+    await win.keyboard.press('Control+Shift+s');
+    await win.waitForFunction(() => document.title.startsWith('once.tabproj'), null, { timeout: 5000 });
+    const onceIndex = await activeIndex();
+    await win.keyboard.press('Control+Tab');
+    await waitIdle(win);
+    await openVia(proj);
+    assert.equal((await tabs()).filter((t) => t === 'once').length, 1);
+    assert.equal((await tabs()).length, 3);
+    assert.equal(await activeIndex(), onceIndex);
+  });
+  await step('closing a modified tab asks; Cancel keeps it, Don\'t save closes it', async () => {
+    await win.keyboard.press('Control+Tab');
+    await waitIdle(win);
+    await win.evaluate(() => window.sixline.editor.setCursor({ track: 0, bar: 0, beat: 0, string: 0 }));
+    await win.keyboard.press('5');
+    const i = await activeIndex();
+    const name = (await tabs())[i];
+    assert.match(name, /\*$/);
+    await win.keyboard.press('Control+w');
+    await win.waitForSelector('dialog.unsaved[open]');
+    await win.click('dialog.unsaved button[value=cancel]');
+    assert.equal((await tabs()).length, 3);
+    await win.locator('#doctabs .dtab').nth(i).locator('.dclose').click();
+    await win.waitForSelector('dialog.unsaved[open]');
+    await win.click('dialog.unsaved button[value=discard]');
+    await waitIdle(win);
+    assert.equal((await tabs()).length, 2);
+    assert.ok(!(await tabs()).includes(name));
+  });
+  await step('closing the last tab leaves a fresh Untitled; opening a file replaces an untouched Untitled', async () => {
+    for (let i = 0; i < 10 && ((await tabs()).length > 1 || (await tabs())[0] !== 'Untitled'); i++) {
+      await win.keyboard.press('Control+w');
+      if (await win.locator('dialog.unsaved[open]').count()) await win.click('dialog.unsaved button[value=discard]');
+      await waitIdle(win);
+    }
+    assert.deepEqual(await tabs(), ['Untitled']);
+    await openVia(path.join(root, 'fixtures/fixture.gp3'));
+    assert.deepEqual(await tabs(), ['fixture']);
+  });
+  await step('quitting with unsaved tabs asks first (Cancel keeps the window)', async () => {
+    await win.keyboard.press('3');
+    await app.evaluate(({ dialog }) => {
+      globalThis.__asked = 0;
+      dialog.showMessageBoxSync = () => (globalThis.__asked++, 1); // Cancel
+    });
+    win.on('dialog', () => {}); // leave the beforeunload to SixLine's own prompt (Playwright would auto-dismiss it)
+    await win.evaluate(() => setTimeout(() => window.close(), 0));
+    await win.waitForTimeout(800);
+    assert.equal(await app.evaluate(() => globalThis.__asked), 1, 'prompt shown');
+    assert.equal(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length), 1, 'window still open');
+  });
+  await step('no page errors', async () => assert.deepEqual(errors, []));
+  await closeApp(app, win);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -680,7 +781,7 @@ await step('edit a .tabproj and Ctrl+S saves it in place', async () => {
   const saved = JSON.parse(fs.readFileSync(proj, 'utf8'));
   assert.equal(saved.format, 'tabproj');
   assert.deepEqual(saved.song.tracks[0].measures[0].voices[0][0].notes, [{ string: 0, fret: 7, velocity: 95 }]);
-  await app.close();
+  await closeApp(app, win);
 });
 
 const big = path.join(root, 'gp5-examples/Tower10.gp5');
@@ -710,7 +811,7 @@ if (fs.existsSync(big)) {
     console.log(`       open+first render ${openMs}ms; edit->rendered ${ms.map((x) => x.toFixed(0)).join(', ')}ms`);
     await win.screenshot({ path: path.join(out, 'large.png') });
     assert.deepEqual(errors, []);
-    await app.close();
+    await closeApp(app, win);
   });
 }
 

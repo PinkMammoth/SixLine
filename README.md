@@ -64,6 +64,7 @@ npm run test:e2e  # builds, then drives the real Electron app with Playwright
 | Space | play / pause |
 | Ctrl+Z, Ctrl+Y / Ctrl+Shift+Z | undo, redo |
 | Ctrl+N / Ctrl+O / Ctrl+S / Ctrl+Shift+S | new, open, save, save as |
+| Ctrl+W, Ctrl+Tab / Ctrl+Shift+Tab (or Ctrl+PgDn/PgUp) | close tab, next/previous tab |
 | Ctrl+I | import a Standard MIDI File (also via Open…) |
 | Ctrl+E | export Standard MIDI File (same generator as playback) |
 | F6 (or double-click a track) | track properties (name, MIDI program, tuning presets, capo, volume, pan) |
@@ -88,6 +89,8 @@ A grid of the current bar appears under the score: rows are kit pieces, columns 
 | Enter / Del | toggle / delete the note at the cursor pitch |
 
 The current pitch or kit piece is shown in the status bar. Pick a GM instrument with F6.
+
+Each open song is a tab; opening a file adds a tab (an untouched Untitled tab is replaced, and a file that is already open is just focused). Closing or quitting with unsaved changes asks first.
 
 Clicking in the score moves both the edit caret and the playback position. Click the time signature in the toolbar to change it from the current bar on. Add or remove tracks from the Track menu.
 

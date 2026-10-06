@@ -279,3 +279,9 @@ describe('track type conversion', () => {
     expect(e.song.tracks[0].measures[1].voices[0][0].notes[0].pitch).toBe(30);
   });
 });
+
+describe('new editor default row', () => {
+  it('a new editor on a drum song starts on the snare row', () => {
+    expect(new Editor(createSong({ tracks: ['drums'] })).rowPitch()).toBe(38);
+  });
+});

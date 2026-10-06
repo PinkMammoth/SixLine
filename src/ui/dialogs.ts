@@ -127,3 +127,22 @@ export async function trackDialog(t: Track) {
 function clamp(v: number, lo: number, hi: number, dflt: number) {
   return Number.isFinite(v) ? Math.max(lo, Math.min(hi, Math.round(v))) : dflt;
 }
+
+/** Unsaved changes in a document that is about to close. */
+export function unsavedDialog(name: string): Promise<'save' | 'discard' | 'cancel'> {
+  return new Promise((resolve) => {
+    const dlg = document.createElement('dialog');
+    dlg.className = 'unsaved';
+    dlg.innerHTML = `<form method="dialog"><h3></h3><p>Save changes before closing?</p><div class="buttons">
+      <button value="save" type="submit">Save</button><button value="discard" type="submit">Don't save</button><button value="cancel" type="submit">Cancel</button></div></form>`;
+    dlg.querySelector('h3')!.textContent = name;
+    dlg.addEventListener('close', () => {
+      const v = dlg.returnValue;
+      dlg.remove();
+      resolve(v === 'save' || v === 'discard' ? v : 'cancel');
+    });
+    document.body.appendChild(dlg);
+    dlg.showModal();
+    dlg.querySelector<HTMLButtonElement>('button[value=save]')!.focus();
+  });
+}

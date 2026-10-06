@@ -10,7 +10,7 @@ import { importDialog, reportDialog } from './ui/importDialog';
 import { initialFile, onOpenFile, openFile, saveFile, type OpenedFile } from './platform/host';
 import { buildMenus, type MenuDef } from './ui/menu';
 import { locateCaret } from './ui/caret';
-import { newSongDialog, pitchName, timeSignatureDialog, trackDialog } from './ui/dialogs';
+import { newSongDialog, pitchName, timeSignatureDialog, trackDialog, unsavedDialog } from './ui/dialogs';
 import { bindDrumGrid, renderDrumGrid } from './ui/drumgrid';
 import { DRUM_BY_SHORTCUT, drumName } from './model/drums';
 
@@ -18,9 +18,20 @@ const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getEleme
 
 // ------------------------------------------------------------------ state
 
-const editor = new Editor(createSong({ tracks: ['guitar'] }));
-let filePath: string | null = null;
-let fileName = 'Untitled.tabproj';
+/** An open document (one tab). */
+interface Doc {
+  editor: Editor;
+  filePath: string | null;
+  fileName: string;
+  scrollTop: number;
+}
+const docs: Doc[] = [];
+let active: Doc = newDoc(createSong({ tracks: ['guitar'] }), null, 'Untitled.tabproj');
+docs.push(active);
+/** The active document's editor. Every command acts on it. */
+let editor = active.editor;
+/** Scroll position to restore after the next render (when switching tabs). */
+let restoreScroll: number | null = null;
 let score: at.model.Score | null = null;
 let renderedTrack = -1;
 let pendingFirstBar: number | null = null;
@@ -62,6 +73,10 @@ api.renderStarted.on(() => {
 api.renderFinished.on(() => {
   rendering = false;
   lastRenderMs = performance.now() - renderStart;
+  if (restoreScroll !== null) {
+    $('score').scrollTop = restoreScroll;
+    restoreScroll = null;
+  }
   updateCaret();
   updateStatus();
   if (renderQueued) flushRender();
@@ -92,17 +107,103 @@ api.error.on((e) => {
 
 // ------------------------------------------------------------------ rendering
 
-editor.onChange((c) => {
-  pendingFirstBar = pendingFirstBar === null ? c.firstBar : Math.min(pendingFirstBar, c.firstBar);
-  pendingStructural ||= c.structural;
-  pendingReset ||= !!c.reset;
+function newDoc(song: Song, filePath: string | null, fileName: string): Doc {
+  const ed = new Editor(song);
+  // listeners are per editor; only the active document drives the view
+  ed.onChange((c) => {
+    renderTabs();
+    if (ed !== editor) return;
+    pendingFirstBar = pendingFirstBar === null ? c.firstBar : Math.min(pendingFirstBar, c.firstBar);
+    pendingStructural ||= c.structural;
+    pendingReset ||= !!c.reset;
+    scheduleRender();
+  });
+  ed.onCursor(() => {
+    if (ed !== editor) return;
+    if (editor.cursor.track !== renderedTrack) scheduleRender();
+    updateCaret();
+    updateStatus();
+  });
+  return { editor: ed, filePath, fileName, scrollTop: 0 };
+}
+
+/** Show a document: everything (render, tracks, status, playback) switches to it. */
+function activate(doc: Doc) {
+  if (doc === active && editor === doc.editor && score) return;
+  active.scrollTop = $('score').scrollTop;
+  api.stop();
+  active = doc;
+  editor = doc.editor;
+  score = null;
+  renderedTrack = -1;
+  pendingReset = true;
+  restoreScroll = doc.scrollTop;
   scheduleRender();
-});
-editor.onCursor(() => {
-  if (editor.cursor.track !== renderedTrack) scheduleRender();
-  updateCaret();
+  renderTabs();
+  renderTracks();
   updateStatus();
-});
+}
+
+/** A tab nobody has touched yet (the startup "Untitled") is replaced instead of kept. */
+const isPristine = (d: Doc) => !d.filePath && !d.editor.dirty && !d.editor.canUndo && d.fileName === 'Untitled.tabproj';
+
+/** Open a song in a new tab (or reuse a pristine untitled one / the tab already showing that file). */
+function openDocument(song: Song, filePath: string | null, fileName: string) {
+  const existing = filePath ? docs.find((d) => d.filePath === filePath) : undefined;
+  if (existing) {
+    activate(existing);
+    setMessage(`${fileName} is already open`);
+    return;
+  }
+  const doc = newDoc(song, filePath, fileName);
+  const i = docs.indexOf(active);
+  if (isPristine(active)) docs[i] = doc;
+  else docs.splice(i + 1, 0, doc);
+  score = null; // force activate() to switch even when replacing in place
+  activate(doc);
+}
+
+async function closeDoc(doc = active) {
+  if (doc.editor.dirty) {
+    if (doc !== active) activate(doc);
+    const choice = await unsavedDialog(doc.fileName);
+    if (choice === 'cancel') return false;
+    if (choice === 'save' && !(await doSave())) return false;
+  }
+  const i = docs.indexOf(doc);
+  docs.splice(i, 1);
+  if (!docs.length) docs.push(newDoc(createSong({ tracks: ['guitar'] }), null, 'Untitled.tabproj'));
+  if (doc === active) {
+    score = null;
+    activate(docs[Math.min(i, docs.length - 1)]);
+  } else renderTabs();
+  return true;
+}
+
+function cycleDoc(delta: number) {
+  const i = docs.indexOf(active);
+  activate(docs[(i + delta + docs.length) % docs.length]);
+}
+
+function renderTabs() {
+  const el = $('doctabs');
+  el.innerHTML = '';
+  for (const d of docs) {
+    const t = document.createElement('div');
+    t.className = 'dtab' + (d === active ? ' sel' : '');
+    t.title = d.filePath ?? d.fileName;
+    t.innerHTML = '<span class="dname"></span><span class="dclose" title="Close (Ctrl+W)">×</span>';
+    t.querySelector('.dname')!.textContent = d.fileName.replace(/\.tabproj$/, '') + (d.editor.dirty ? ' *' : '');
+    t.onmousedown = (e) => {
+      if (e.button === 1) {
+        e.preventDefault();
+        closeDoc(d);
+      } else if (!(e.target as HTMLElement).classList.contains('dclose')) activate(d);
+    };
+    t.querySelector<HTMLElement>('.dclose')!.onclick = () => closeDoc(d);
+    el.appendChild(t);
+  }
+}
 
 function scheduleRender() {
   if (renderQueued) return;
@@ -218,10 +319,7 @@ async function importMidiFile(f: OpenedFile) {
     if (!plans) return;
     const base = f.name.replace(/\.[^.]+$/, '');
     const { song, report } = buildSong(raw, plans, base);
-    api.stop();
-    editor.load(song);
-    filePath = null;
-    fileName = base + '.tabproj';
+    openDocument(song, null, base + '.tabproj');
     setMessage(`Imported ${f.name}: ${song.tracks.length} tracks, ${song.masterBars.length} bars, ${report.notes} notes`);
     updateStatus();
     await reportDialog(`Imported ${f.name}`, report.lines);
@@ -238,19 +336,10 @@ function loadFile(f: OpenedFile) {
       importMidiFile(f);
       return;
     }
-    let song: Song;
-    if (ext === 'tabproj') {
-      song = parseProject(new TextDecoder().decode(f.bytes));
-      filePath = f.path;
-      fileName = f.name;
-    } else {
-      song = loadGpBytes(f.bytes);
-      // imported files are saved as a new project next to the original
-      filePath = null;
-      fileName = f.name.replace(/\.[^.]+$/, '') + '.tabproj';
-    }
-    api.stop();
-    editor.load(song);
+    if (ext === 'tabproj') openDocument(parseProject(new TextDecoder().decode(f.bytes)), f.path, f.name);
+    // imported files are saved as a new project
+    else openDocument(loadGpBytes(f.bytes), null, f.name.replace(/\.[^.]+$/, '') + '.tabproj');
+    const song = editor.song;
     setMessage(`Opened ${f.name}: ${song.tracks.length} tracks, ${song.masterBars.length} bars`);
   } catch (e) {
     console.error(e);
@@ -261,7 +350,7 @@ function loadFile(f: OpenedFile) {
 async function doExportMidi() {
   try {
     const data = exportMidi(editor.song, api.settings);
-    const p = await saveFile(null, data, fileName.replace(/\.tabproj$/, '') + '.mid', [{ name: 'Standard MIDI File', extensions: ['mid', 'midi'] }]);
+    const p = await saveFile(null, data, active.fileName.replace(/\.tabproj$/, '') + '.mid', [{ name: 'Standard MIDI File', extensions: ['mid', 'midi'] }]);
     if (p) setMessage('Exported MIDI ' + p.split(/[\\/]/).pop());
   } catch (e) {
     console.error(e);
@@ -269,24 +358,26 @@ async function doExportMidi() {
   }
 }
 
-async function doSave(as = false) {
-  const data = new TextEncoder().encode(serializeProject(editor.song));
-  const p = await saveFile(as ? null : filePath, data, fileName, [PROJ_FILTER]);
-  if (!p) return;
-  filePath = p;
-  fileName = p.split(/[\\/]/).pop()!;
-  editor.dirty = false;
-  setMessage('Saved ' + fileName);
+/** Save the active document; resolves true when it was written. */
+async function doSave(as = false): Promise<boolean> {
+  const doc = active;
+  const data = new TextEncoder().encode(serializeProject(doc.editor.song));
+  const p = await saveFile(as ? null : doc.filePath, data, doc.fileName, [PROJ_FILTER]);
+  if (!p) return false;
+  doc.filePath = p;
+  doc.fileName = p.split(/[\\/]/).pop()!;
+  doc.editor.dirty = false;
+  setMessage('Saved ' + doc.fileName);
+  renderTabs();
   updateStatus();
+  return true;
 }
 
 async function doNew() {
   const o = await newSongDialog();
   if (!o) return;
-  api.stop();
-  filePath = null;
-  fileName = o.title.replace(/[\\/:*?"<>|]/g, '_') + '.tabproj';
-  editor.load(createSong({ title: o.title, tempo: o.tempo, num: o.num, den: o.den, bars: o.bars, tracks: [o.type] }));
+  const song = createSong({ title: o.title, tempo: o.tempo, num: o.num, den: o.den, bars: o.bars, tracks: [o.type] });
+  openDocument(song, null, o.title.replace(/[\\/:*?"<>|]/g, '_') + '.tabproj');
 }
 
 async function editTrack(i = editor.cursor.track) {
@@ -337,6 +428,10 @@ window.addEventListener('keydown', (e) => {
     else if (lk === 'i') doImportMidi();
     else if (lk === 'o') doOpen();
     else if (lk === 'n') doNew();
+    else if (lk === 'w') closeDoc();
+    else if (k === 'Tab') cycleDoc(e.shiftKey ? -1 : 1);
+    else if (k === 'PageDown') cycleDoc(1);
+    else if (k === 'PageUp') cycleDoc(-1);
     else if (k === 'ArrowRight') editor.moveBar(1);
     else if (k === 'ArrowLeft') editor.moveBar(-1);
     else if (k === 'Delete' || k === 'Backspace') editor.deleteBeat();
@@ -385,6 +480,7 @@ const menus: MenuDef[] = [
       { label: 'Open…', key: 'Ctrl+O', run: doOpen },
       { label: 'Save', key: 'Ctrl+S', run: () => doSave() },
       { label: 'Save As…', key: 'Ctrl+Shift+S', run: () => doSave(true) },
+      { label: 'Close', key: 'Ctrl+W', run: () => closeDoc() },
       null,
       { label: 'Import MIDI…', key: 'Ctrl+I', run: doImportMidi },
       { label: 'Export MIDI…', key: 'Ctrl+E', run: doExportMidi },
@@ -553,11 +649,11 @@ function updateStatus() {
     ${over}
     <span style="flex:1"></span>
     <span id="msg"></span>
-    <span>${fileName}${editor.dirty ? ' *' : ''}</span>
+    <span>${active.fileName}${editor.dirty ? ' *' : ''}</span>
     <span title="last render">${lastRenderMs.toFixed(0)}ms</span>`;
   $('msg').textContent = message;
   updateToolbar();
-  document.title = `${fileName}${editor.dirty ? ' *' : ''} - SixLine`;
+  document.title = `${active.fileName}${editor.dirty ? ' *' : ''} - SixLine`;
 }
 
 function fmtTime(ms: number) {
@@ -567,7 +663,16 @@ function fmtTime(ms: number) {
 
 // ------------------------------------------------------------------ boot
 
-bindDrumGrid($('drumgrid'), editor);
+// Quitting with unsaved tabs: block the unload; the desktop shell then asks whether to discard.
+window.addEventListener('beforeunload', (e) => {
+  if (docs.some((d) => d.editor.dirty)) {
+    e.preventDefault();
+    e.returnValue = '';
+  }
+});
+renderTabs();
+
+bindDrumGrid($('drumgrid'), () => editor);
 
 renderTracks();
 updateStatus();
@@ -576,4 +681,4 @@ initialFile().then((f) => f && loadFile(f));
 onOpenFile(loadFile);
 
 // Test/automation hook (no network, local only).
-(window as any).sixline = { editor, api, loadFile, get score() { return score; }, get rendering() { return rendering || renderQueued; }, get playerState() { return playerState; }, get playerPos() { return playerPos; } };
+(window as any).sixline = { get editor() { return editor; }, get docs() { return docs; }, get active() { return active; }, api, loadFile, closeDoc, get score() { return score; }, get rendering() { return rendering || renderQueued; }, get playerState() { return playerState; }, get playerPos() { return playerPos; } };

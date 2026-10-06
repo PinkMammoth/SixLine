@@ -48,7 +48,9 @@ export class Editor {
   /** Last typed digit, for multi-digit fret entry. */
   private pendingDigit: { at: string; value: number; time: number } | null = null;
 
-  constructor(public song: Song) {}
+  constructor(public song: Song) {
+    if (song.tracks[0]) this.cursor.string = this.defaultRow(song.tracks[0]);
+  }
 
   onChange(fn: (c: Change) => void) {
     this.listeners.push(fn);

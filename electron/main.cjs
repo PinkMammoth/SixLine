@@ -34,6 +34,19 @@ function createWindow() {
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: false, devTools: !app.isPackaged },
   });
   mainWindow = win;
+  // the page blocks unload while any tab has unsaved changes: ask before discarding them
+  win.webContents.on('will-prevent-unload', (event) => {
+    const choice = dialog.showMessageBoxSync(win, {
+      type: 'warning',
+      buttons: ['Quit without saving', 'Cancel'],
+      defaultId: 1,
+      cancelId: 1,
+      title: 'SixLine',
+      message: 'Some open songs have unsaved changes.',
+      detail: 'Quit anyway and lose those changes?',
+    });
+    if (choice === 0) event.preventDefault(); // allow the unload
+  });
   // a dev server is only honoured in development builds
   if (!app.isPackaged && process.env.VITE_DEV_URL) win.loadURL(process.env.VITE_DEV_URL);
   else win.loadURL('app://local/index.html');

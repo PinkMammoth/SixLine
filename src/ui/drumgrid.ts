@@ -30,8 +30,10 @@ export function renderDrumGrid(el: HTMLElement, editor: Editor) {
   el.innerHTML = html + '</table>';
 }
 
-export function bindDrumGrid(el: HTMLElement, editor: Editor) {
+/** `getEditor` returns the active document's editor (it changes when switching tabs). */
+export function bindDrumGrid(el: HTMLElement, getEditor: () => Editor) {
   el.addEventListener('mousedown', (e) => {
+    const editor = getEditor();
     const td = (e.target as HTMLElement).closest('td');
     if (!td) return;
     e.preventDefault();
