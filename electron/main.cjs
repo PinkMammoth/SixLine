@@ -9,17 +9,33 @@ protocol.registerSchemesAsPrivileged([
   { scheme: 'app', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
 ]);
 
-// A supported file passed on the command line is opened at startup.
-const fileArg = process.argv.slice(1).find((a) => /\.(gp[345]|tabproj|midi?)$/i.test(a));
+// A supported file passed on the command line (or via a Windows file association) is opened at startup.
+const fileFromArgv = (argv) => argv.slice(1).find((a) => /\.(gp[345]|tabproj|midi?)$/i.test(a));
+const fileArg = fileFromArgv(process.argv);
+
+// One window: opening a project from Explorer while SixLine runs opens it in the existing window.
+if (!app.requestSingleInstanceLock()) app.quit();
+let mainWindow = null;
+app.on('second-instance', (_e, argv, cwd) => {
+  if (!mainWindow) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.focus();
+  const f = fileFromArgv(argv);
+  if (f) mainWindow.webContents.send('open-path', path.resolve(cwd, f));
+});
 
 function createWindow() {
   const win = new BrowserWindow({
     width: 1400,
     height: 900,
+    title: 'SixLine',
     backgroundColor: '#ffffff',
-    webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: false },
+    icon: path.join(__dirname, '..', 'build', 'icon.png'),
+    webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: false, devTools: !app.isPackaged },
   });
-  if (process.env.VITE_DEV_URL) win.loadURL(process.env.VITE_DEV_URL);
+  mainWindow = win;
+  // a dev server is only honoured in development builds
+  if (!app.isPackaged && process.env.VITE_DEV_URL) win.loadURL(process.env.VITE_DEV_URL);
   else win.loadURL('app://local/index.html');
 }
 

@@ -7,7 +7,7 @@ import { parseProject, serializeProject } from './io/project';
 import { exportMidi } from './io/midiExport';
 import { buildSong, parseMidiBytes, proposeMapping } from './io/midiImport';
 import { importDialog, reportDialog } from './ui/importDialog';
-import { initialFile, openFile, saveFile, type OpenedFile } from './platform/host';
+import { initialFile, onOpenFile, openFile, saveFile, type OpenedFile } from './platform/host';
 import { buildMenus, type MenuDef } from './ui/menu';
 import { locateCaret } from './ui/caret';
 import { newSongDialog, pitchName, timeSignatureDialog, trackDialog } from './ui/dialogs';
@@ -548,6 +548,7 @@ renderTracks();
 updateStatus();
 scheduleRender();
 initialFile().then((f) => f && loadFile(f));
+onOpenFile(loadFile);
 
 // Test/automation hook (no network, local only).
 (window as any).sixline = { editor, api, loadFile, get score() { return score; }, get rendering() { return rendering || renderQueued; }, get playerState() { return playerState; }, get playerPos() { return playerPos; } };

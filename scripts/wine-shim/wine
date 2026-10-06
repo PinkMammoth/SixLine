@@ -1,0 +1,3 @@
+#!/bin/sh
+# See wine-shim.cjs: extracts the NSIS uninstaller instead of running it under Wine.
+exec node "$(dirname "$0")/wine-shim.cjs" "$@"

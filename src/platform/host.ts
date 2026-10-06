@@ -14,6 +14,7 @@ interface Bridge {
   readFile(path: string): Promise<OpenedFile>;
   saveFile(o: { path?: string | null; data: Uint8Array; defaultName: string; filters: FileFilter[] }): Promise<string | null>;
   initialFile(): Promise<string | null>;
+  onOpenPath(cb: (path: string) => void): void;
 }
 
 const bridge = (window as any).host as Bridge | undefined;
@@ -47,4 +48,9 @@ export async function saveFile(path: string | null, data: Uint8Array, defaultNam
 export async function initialFile(): Promise<OpenedFile | null> {
   const p = bridge && (await bridge.initialFile());
   return p ? bridge!.readFile(p) : null;
+}
+
+/** Files opened from the OS while the app is running (e.g. double-clicking a .tabproj). */
+export function onOpenFile(cb: (f: OpenedFile) => void) {
+  bridge?.onOpenPath(async (p) => cb(await bridge.readFile(p)));
 }

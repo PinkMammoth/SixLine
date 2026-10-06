@@ -2,7 +2,7 @@
   "name": "sixline",
   "version": "0.1.0",
   "private": true,
-  "description": "SixLine: local-only lightweight tablature editor",
+  "description": "SixLine: a small, local-only tablature editor",
   "main": "electron/main.cjs",
   "type": "module",
   "scripts": {
@@ -12,19 +12,25 @@
     "test": "vitest run",
     "test:e2e": "npm run build && node e2e/run.mjs",
     "fixtures": "python3 scripts/make_fixtures.py fixtures",
-    "fixtures:midi": "node scripts/midi-fixtures.mjs fixtures/midi"
-  },
-  "dependencies": {
-    "@coderline/alphatab": "^1.8.4",
-    "midi-file": "^1.2.4"
+    "fixtures:midi": "node scripts/midi-fixtures.mjs fixtures/midi",
+    "dist": "npm run build && electron-builder --win --x64 --config electron-builder.config.cjs",
+    "release": "npm test && npm run test:e2e && npm run dist && npm run verify:packaged",
+    "verify:packaged": "node scripts/verify-packaged.mjs",
+    "icon": "node scripts/make-icon.mjs"
   },
   "devDependencies": {
+    "@coderline/alphatab": "^1.8.4",
     "@coderline/alphatab-vite": "^1.8.4",
     "@types/node": "^26.6.4",
     "electron": "^44.5.1",
+    "electron-builder": "^26.15.3",
+    "midi-file": "^1.2.4",
     "playwright-core": "^1.63.0",
+    "rcedit": "^5.0.2",
     "typescript": "^7.0.2",
     "vite": "^8.3.3",
     "vitest": "^5.0.3"
-  }
+  },
+  "productName": "SixLine",
+  "author": "SixLine"
 }

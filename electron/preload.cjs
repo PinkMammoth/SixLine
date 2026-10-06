@@ -5,4 +5,5 @@ contextBridge.exposeInMainWorld('host', {
   readFile: (path) => ipcRenderer.invoke('read-file', path),
   saveFile: (opts) => ipcRenderer.invoke('save-file', opts),
   initialFile: () => ipcRenderer.invoke('initial-file'),
+  onOpenPath: (cb) => ipcRenderer.on('open-path', (_e, p) => cb(p)),
 });
