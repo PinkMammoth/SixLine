@@ -5,6 +5,8 @@ import { createSong, isStringed, type Duration, type Song } from './model/song';
 import { loadGpBytes, songToScore } from './io/alphatab';
 import { parseProject, serializeProject } from './io/project';
 import { exportMidi } from './io/midiExport';
+import { buildSong, parseMidiBytes, proposeMapping } from './io/midiImport';
+import { importDialog, reportDialog } from './ui/importDialog';
 import { initialFile, openFile, saveFile, type OpenedFile } from './platform/host';
 import { buildMenus, type MenuDef } from './ui/menu';
 import { locateCaret } from './ui/caret';
@@ -176,16 +178,49 @@ $('at').addEventListener('mousedown', (ev) => {
 // ------------------------------------------------------------------ files
 
 const GP_FILTER = { name: 'Guitar Pro 3-5', extensions: ['gp3', 'gp4', 'gp5'] };
-const PROJ_FILTER = { name: 'TabEdit project', extensions: ['tabproj'] };
+const PROJ_FILTER = { name: 'SixLine project', extensions: ['tabproj'] };
+
+const MIDI_FILTER = { name: 'Standard MIDI File', extensions: ['mid', 'midi'] };
 
 async function doOpen() {
-  const f = await openFile([{ name: 'Supported files', extensions: ['tabproj', 'gp3', 'gp4', 'gp5'] }, GP_FILTER, PROJ_FILTER]);
+  const f = await openFile([{ name: 'Supported files', extensions: ['tabproj', 'gp3', 'gp4', 'gp5', 'mid', 'midi'] }, GP_FILTER, PROJ_FILTER, MIDI_FILTER]);
   if (f) loadFile(f);
+}
+
+async function doImportMidi() {
+  const f = await openFile([MIDI_FILTER]);
+  if (f) await importMidiFile(f);
+}
+
+/** MIDI -> mapping dialog -> ordinary song (+ report of every adjustment). */
+async function importMidiFile(f: OpenedFile) {
+  try {
+    const raw = parseMidiBytes(f.bytes);
+    if (!raw.tracks.length) throw new Error('no notes found');
+    const plans = await importDialog(f.name, raw, proposeMapping(raw));
+    if (!plans) return;
+    const base = f.name.replace(/\.[^.]+$/, '');
+    const { song, report } = buildSong(raw, plans, base);
+    api.stop();
+    editor.load(song);
+    filePath = null;
+    fileName = base + '.tabproj';
+    setMessage(`Imported ${f.name}: ${song.tracks.length} tracks, ${song.masterBars.length} bars, ${report.notes} notes`);
+    updateStatus();
+    await reportDialog(`Imported ${f.name}`, report.lines);
+  } catch (e) {
+    console.error(e);
+    setMessage(`Could not import ${f.name}: ${(e as Error).message}`);
+  }
 }
 
 function loadFile(f: OpenedFile) {
   try {
     const ext = f.name.split('.').pop()!.toLowerCase();
+    if (ext === 'mid' || ext === 'midi') {
+      importMidiFile(f);
+      return;
+    }
     let song: Song;
     if (ext === 'tabproj') {
       song = parseProject(new TextDecoder().decode(f.bytes));
@@ -238,8 +273,16 @@ async function doNew() {
 }
 
 async function editTrack(i = editor.cursor.track) {
-  const props = await trackDialog(editor.song.tracks[i]);
-  if (props) editor.setTrackProps(i, props);
+  const old = editor.song.tracks[i];
+  const r = await trackDialog(old);
+  if (!r) return;
+  if (r.type !== old.type) {
+    // the dialog's tuning/capo/program fields belong to the old type
+    const dropped = editor.setTrackType(i, r.type);
+    const { tuning: _t, capo: _c, program, ...rest } = r.props;
+    editor.setTrackProps(i, old.type !== 'drums' && r.type !== 'drums' && program !== undefined ? { ...rest, program } : rest);
+    setMessage(`Converted "${old.name}" to ${r.type}` + (dropped ? `; ${dropped} note(s) could not be placed on the tuning and were removed (Ctrl+Z restores)` : ''));
+  } else editor.setTrackProps(i, r.props);
 }
 
 async function editTimeSignature() {
@@ -274,6 +317,7 @@ window.addEventListener('keydown', (e) => {
     else if ((lk === 'z' && e.shiftKey) || lk === 'y') editor.redo();
     else if (lk === 's') doSave(e.shiftKey);
     else if (lk === 'e') doExportMidi();
+    else if (lk === 'i') doImportMidi();
     else if (lk === 'o') doOpen();
     else if (lk === 'n') doNew();
     else if (k === 'ArrowRight') editor.moveBar(1);
@@ -325,6 +369,7 @@ const menus: MenuDef[] = [
       { label: 'Save', key: 'Ctrl+S', run: () => doSave() },
       { label: 'Save As…', key: 'Ctrl+Shift+S', run: () => doSave(true) },
       null,
+      { label: 'Import MIDI…', key: 'Ctrl+I', run: doImportMidi },
       { label: 'Export MIDI…', key: 'Ctrl+E', run: doExportMidi },
     ],
   },
@@ -487,7 +532,7 @@ function updateStatus() {
     <span title="last render">${lastRenderMs.toFixed(0)}ms</span>`;
   $('msg').textContent = message;
   updateToolbar();
-  document.title = `${fileName}${editor.dirty ? ' *' : ''} - TabEdit`;
+  document.title = `${fileName}${editor.dirty ? ' *' : ''} - SixLine`;
 }
 
 function fmtTime(ms: number) {
@@ -505,4 +550,4 @@ scheduleRender();
 initialFile().then((f) => f && loadFile(f));
 
 // Test/automation hook (no network, local only).
-(window as any).tabedit = { editor, api, loadFile, get score() { return score; }, get rendering() { return rendering || renderQueued; }, get playerState() { return playerState; }, get playerPos() { return playerPos; } };
+(window as any).sixline = { editor, api, loadFile, get score() { return score; }, get rendering() { return rendering || renderQueued; }, get playerState() { return playerState; }, get playerPos() { return playerPos; } };

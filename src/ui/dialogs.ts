@@ -1,6 +1,8 @@
 // Small modal forms built on <dialog>. Enter = OK, Esc = cancel.
-import { STANDARD_TUNINGS, type Track, type TrackType } from '../model/song';
+import { type Track, type TrackType } from '../model/song';
 import { GM_PROGRAMS } from '../model/gm';
+import { TUNING_PRESETS } from '../model/tunings';
+export { TUNING_PRESETS };
 
 type Field =
   | { name: string; label: string; type: 'text'; value: string }
@@ -90,20 +92,13 @@ export function parseTuning(s: string): number[] | null {
   return out.length >= 1 && out.length <= 10 && out.every((p) => p !== null) ? (out as number[]) : null;
 }
 
-const TUNING_PRESETS: Record<string, number[]> = {
-  'Guitar standard': STANDARD_TUNINGS.guitar,
-  'Guitar drop D': [64, 59, 55, 50, 45, 38],
-  'Guitar D standard': [62, 57, 53, 48, 43, 38],
-  'Guitar drop C': [62, 57, 53, 48, 43, 36],
-  '7-string standard': [64, 59, 55, 50, 45, 40, 35],
-  'Bass 4-string': STANDARD_TUNINGS.bass,
-  'Bass 5-string': [43, 38, 33, 28, 23],
-  'Bass drop D': [43, 38, 33, 26],
-};
 
 export async function trackDialog(t: Track) {
   const stringed = t.type === 'guitar' || t.type === 'bass';
-  const fields: Field[] = [{ name: 'name', label: 'Name', type: 'text', value: t.name }];
+  const fields: Field[] = [
+    { name: 'name', label: 'Name', type: 'text', value: t.name },
+    { name: 'type', label: 'Track type', type: 'select', value: t.type, options: TYPES },
+  ];
   if (t.type !== 'drums')
     fields.push({ name: 'program', label: 'Instrument (GM)', type: 'select', value: String(t.program), options: GM_PROGRAMS.map((n, i) => [String(i), `${i} ${n}`]) });
   if (stringed) {
@@ -118,6 +113,7 @@ export async function trackDialog(t: Track) {
     if (preset && document.activeElement?.id === 'f-preset') (f.elements.namedItem('tuning') as HTMLInputElement).value = formatTuning(TUNING_PRESETS[preset]);
   });
   if (!r) return null;
+  const type = r.type as TrackType;
   const out: Partial<Track> = { name: r.name || t.name, volume: clamp(Number(r.volume), 0, 16, t.volume), pan: clamp(Number(r.pan), 0, 16, t.pan) };
   if (r.program !== undefined) out.program = clamp(Number(r.program), 0, 127, t.program);
   if (stringed) {
@@ -125,7 +121,7 @@ export async function trackDialog(t: Track) {
     if (tuning) out.tuning = tuning;
     out.capo = clamp(Number(r.capo), 0, 24, t.capo);
   }
-  return out;
+  return { type, props: out };
 }
 
 function clamp(v: number, lo: number, hi: number, dflt: number) {

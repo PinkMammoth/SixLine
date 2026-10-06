@@ -1,8 +1,8 @@
 {
-  "name": "tabedit",
+  "name": "sixline",
   "version": "0.1.0",
   "private": true,
-  "description": "Local-only lightweight tablature editor",
+  "description": "SixLine: local-only lightweight tablature editor",
   "main": "electron/main.cjs",
   "type": "module",
   "scripts": {
@@ -11,17 +11,17 @@
     "app": "electron .",
     "test": "vitest run",
     "test:e2e": "npm run build && node e2e/run.mjs",
-    "fixtures": "python3 scripts/make_fixtures.py fixtures"
+    "fixtures": "python3 scripts/make_fixtures.py fixtures",
+    "fixtures:midi": "node scripts/midi-fixtures.mjs fixtures/midi"
   },
   "dependencies": {
     "@coderline/alphatab": "^1.8.4",
-    "@tonejs/midi": "^2.0.28"
+    "midi-file": "^1.2.4"
   },
   "devDependencies": {
     "@coderline/alphatab-vite": "^1.8.4",
     "@types/node": "^26.6.4",
     "electron": "^44.5.1",
-    "midi-file": "^1.2.4",
     "playwright-core": "^1.63.0",
     "typescript": "^7.0.2",
     "vite": "^8.3.3",

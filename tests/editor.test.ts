@@ -249,3 +249,33 @@ describe('default cursor rows', () => {
     expect(e.rowPitch()).toBe(60);
   });
 });
+
+describe('track type conversion', () => {
+  it('keys -> guitar fingers every pitch; guitar -> keys -> bass keeps pitches; undo restores', () => {
+    const e = new Editor(createSong({ tracks: ['keys'], bars: 2 }));
+    e.songEdit('notes', (s) => {
+      s.tracks[0].measures[0].voices[0] = [
+        { duration: 4, dots: 0, notes: [{ pitch: 64, velocity: 95 }, { pitch: 55, velocity: 95 }] },
+        { duration: 4, dots: 0, notes: [{ pitch: 67, velocity: 95 }] },
+        { duration: 2, dots: 0, notes: [{ pitch: 67, velocity: 95, tie: true }] },
+      ];
+      s.tracks[0].measures[1].voices[0] = [{ duration: 1, dots: 0, notes: [{ pitch: 30, velocity: 95 }] }];
+    });
+    const dropped = e.setTrackType(0, 'guitar');
+    const t = e.song.tracks[0];
+    expect(dropped).toBe(1); // F#1 is below a guitar's range
+    expect(t.type).toBe('guitar');
+    const beats = t.measures[0].voices[0];
+    expect(beats.map((b) => b.notes.map((n) => t.tuning[n.string!] + n.fret!).sort())).toEqual([[55, 64], [67], [67]]);
+    expect(beats[2].notes[0]).toMatchObject({ tie: true, string: beats[1].notes[0].string, fret: beats[1].notes[0].fret });
+    e.setTrackType(0, 'keys');
+    expect(e.song.tracks[0].measures[0].voices[0].map((b) => b.notes.map((n) => n.pitch).sort())).toEqual([[55, 64], [67], [67]]);
+    e.setTrackType(0, 'bass');
+    expect(e.song.tracks[0].tuning).toEqual([43, 38, 33, 28]);
+    e.undo();
+    e.undo();
+    e.undo();
+    expect(e.song.tracks[0].type).toBe('keys');
+    expect(e.song.tracks[0].measures[1].voices[0][0].notes[0].pitch).toBe(30);
+  });
+});

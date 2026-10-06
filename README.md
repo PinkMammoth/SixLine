@@ -1,6 +1,6 @@
-# TabEdit
+# SixLine
 
-A small, local-only desktop tablature editor in the spirit of Guitar Pro 5: keyboard-driven tab entry, standard notation + tab, MIDI/SoundFont playback, GP3/GP4/GP5 import.
+A small, local-only desktop tablature editor in the spirit of Guitar Pro 5: keyboard-driven tab entry, standard notation + tab, drums and keys, MIDI/SoundFont playback, GP3/GP4/GP5 and MIDI import, MIDI export.
 
 ## Run
 
@@ -43,6 +43,7 @@ npm run test:e2e  # builds, then drives the real Electron app with Playwright
 | Space | play / pause |
 | Ctrl+Z, Ctrl+Y / Ctrl+Shift+Z | undo, redo |
 | Ctrl+N / Ctrl+O / Ctrl+S / Ctrl+Shift+S | new, open, save, save as |
+| Ctrl+I | import a Standard MIDI File (also via Open…) |
 | Ctrl+E | export Standard MIDI File (same generator as playback) |
 | F6 (or double-click a track) | track properties (name, MIDI program, tuning presets, capo, volume, pan) |
 
@@ -69,6 +70,20 @@ The current pitch or kit piece is shown in the status bar. Pick a GM instrument 
 
 Clicking in the score moves both the edit caret and the playback position. Click the time signature in the toolbar to change it from the current bar on. Add or remove tracks from the Track menu.
 
+## MIDI import
+
+`src/io/midiImport.ts` (parse, classify, build), `src/io/quantize.ts` (rhythm), `src/model/fingering.ts` (string/fret assignment).
+
+- **Parsing:** `midi-file`, format 0 and 1. Each MTrk is split per channel. A channel's first program/volume/pan apply; later program changes are ignored and reported.
+- **Classification:** channel 10 → drums; GM 24–31 → guitar; 32–39 → bass; program 0 named like a guitar/bass → that; everything else → keys (notation). The import dialog lets you change type, tuning, name, or skip each track. Track type can also be changed later (F6).
+- **Tuning:** the most standard preset that reaches the part's lowest note (standard → drop D → drop C → 7-string → 7-string drop A → 8-string; bass 4 → drop D → 5-string).
+- **Quantisation:** per quarter-note unit, a straight 32nd grid or a 16th-triplet grid, whichever fits better. One voice per track: simultaneous starts form chords, and overlaps are cut at the next onset. Values: whole to 32nd, dotted, triplets; ties across bar lines and grid boundaries. Every adjustment is counted and shown after import.
+- **Fingering:** Viterbi/beam search over complete chord fingerings with a 4-fret hand window. Costs (hand movement, big jumps, string jumps, chord span/shape, high frets, open strings, rests) are all in `DEFAULT_WEIGHTS`. Notes that can't be fretted go to an extra "(unplayable notes)" keys track, never re-pitched.
+
+Known representation limits: one voice per track on import; velocities are stored exactly but play/export at 8 dynamic levels with one velocity per beat (alphaTab); tempo and time-signature changes take effect at bar lines; no pitch bends, sustain pedal, or other controllers.
+
 ## Fixtures
 
 `fixtures/fixture.gp{3,4,5}` are trivial original riffs generated with PyGuitarPro (`scripts/make_fixtures.py`). Private GP3/GP4/GP5 files can be placed in `gp5-examples/`. They are git-ignored, and tests use them when present and skip them when absent (see `gp5-examples/README.md`).
+
+`fixtures/midi/*.mid` are original MIDI fixtures with explicit ground truth (`scripts/midi-fixtures.mjs`, regenerate with `npm run fixtures:midi`).

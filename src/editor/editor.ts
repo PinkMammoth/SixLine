@@ -3,6 +3,7 @@
 import { createTrack, emptyMeasure, isStringed, type Beat, type Duration, type Measure, type Song, type Track, type TrackType } from '../model/song';
 import { barTicks, beatTicks, voiceTicks } from '../model/rhythm';
 import { DRUM_KIT, SNARE_ROW } from '../model/drums';
+import { convertTrack } from '../model/convert';
 
 export interface Cursor {
   track: number;
@@ -460,6 +461,18 @@ export class Editor {
       if (props.tuning)
         for (const m of t.measures) for (const v of m.voices) for (const b of v) b.notes = b.notes.filter((n) => n.string === undefined || n.string < t.tuning.length);
     });
+  }
+
+  /** Change a track's type (pitches kept; guitar/bass get automatic fingering). Returns notes that could not be placed. */
+  setTrackType(index: number, type: TrackType, tuning?: number[]): number {
+    const src = this.song.tracks[index];
+    if (src.type === type && !tuning) return 0;
+    const { track, dropped } = convertTrack(src, type, tuning);
+    this.edit('Change track type', 'song', (s) => {
+      s.tracks[index] = track;
+      if (index === this.cursor.track) this.cursor.string = this.defaultRow(track);
+    });
+    return dropped;
   }
 
   /** Set the time signature from `bar` onwards, up to the next bar that had a different signature. */
