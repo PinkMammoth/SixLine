@@ -50,6 +50,13 @@ async function step(name, fn) {
   }
 }
 
+// The verification installs and then uninstalls SixLine. Never do that over a real installation.
+if (fs.existsSync(installedExe) && !process.argv.includes('--replace-installed')) {
+  console.error(`SixLine is already installed (${installDir}).\nThis check installs and then UNINSTALLS SixLine, which would remove that installation.\n` +
+    'Uninstall it first, or re-run with --replace-installed if that is intended (npm run verify:packaged -- --replace-installed).');
+  process.exit(2);
+}
+
 // fixtures copied to a normal Windows folder (not the WSL share)
 const gpSrc = ['gp5-examples/Tower10.gp5', 'fixtures/fixture.gp5'].map((f) => path.join(root, f)).find((f) => fs.existsSync(f));
 const gp = path.join(work, path.basename(gpSrc));
