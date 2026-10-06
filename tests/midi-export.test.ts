@@ -204,3 +204,28 @@ describe('MIDI export', () => {
     expect(notes).toContainEqual(expect.objectContaining({ track: 0, key: 81, start: 3 * 3840, dur: 3840 }));
   });
 });
+
+describe('MIDI export of drum and keys edits', () => {
+  it('reflects drum and keys entry made through the editor', () => {
+    const e = new Editor(createSong({ tracks: ['drums', 'keys'], bars: 1 }));
+    e.setDuration(8);
+    e.togglePitch(36);
+    e.togglePitch(42);
+    e.moveRight();
+    e.togglePitch(42);
+    e.moveRight();
+    e.togglePitch(38);
+    e.togglePitch(42);
+    e.setCursor({ track: 1, bar: 0, beat: 0 });
+    e.setDuration(2);
+    e.typeNoteName('c');
+    e.typeNoteName('e');
+    e.transposeNote(-1); // E -> Eb: C minor third
+    const got = fileNotes(exportMidi(e.song));
+    expect(got).toEqual(modelNotes(e.song));
+    expect(got.filter((n) => n.track === 0).map((n) => [n.channel, n.key, n.start])).toEqual([
+      [9, 36, 0], [9, 42, 0], [9, 42, 480], [9, 38, 960], [9, 42, 960],
+    ]);
+    expect(got.filter((n) => n.track === 1).map((n) => [n.key, n.start, n.dur])).toEqual([[60, 0, 1920], [63, 0, 1920]]);
+  });
+});

@@ -181,3 +181,71 @@ describe('tracks and song structure', () => {
     expect(e.song.masterBars.map((m) => `${m.num}/${m.den}`)).toEqual(['7/8', '7/8', '3/4', '3/4']);
   });
 });
+
+describe('drum entry', () => {
+  it('starts on the snare row and toggles kit pieces as plain GM notes', async () => {
+    const { DRUM_KIT, DRUM_BY_SHORTCUT } = await import('../src/model/drums');
+    const e = new Editor(createSong({ tracks: ['guitar', 'drums'] }));
+    e.setCursor({ track: 1 });
+    expect(DRUM_KIT[e.cursor.string].name).toBe('Snare');
+    e.toggleAtCursor();
+    e.togglePitch(DRUM_BY_SHORTCUT.get('k')!.key);
+    e.togglePitch(DRUM_BY_SHORTCUT.get('h')!.key);
+    expect(e.beat.notes.map((n) => n.pitch)).toEqual([42, 38, 36]);
+    expect(DRUM_KIT[e.cursor.string].name).toBe('Closed hi-hat');
+    e.togglePitch(38); // toggling again removes
+    expect(e.beat.notes.map((n) => n.pitch)).toEqual([42, 36]);
+    e.setCursor({ string: DRUM_KIT.findIndex((d) => d.key === 36) });
+    e.deleteNote();
+    expect(e.beat.notes.map((n) => n.pitch)).toEqual([42]);
+    e.undo();
+    e.undo();
+    expect(e.beat.notes.map((n) => n.pitch)).toEqual([42, 38, 36]);
+    expect(e.song.tracks[1].measures[0].voices[0][0].notes.every((n) => n.string === undefined && n.fret === undefined)).toBe(true);
+  });
+
+  it('digits do nothing on drum tracks', () => {
+    const e = new Editor(createSong({ tracks: ['drums'] }));
+    e.typeDigit(5, 0);
+    expect(e.beat.notes).toEqual([]);
+  });
+});
+
+describe('keys entry', () => {
+  it('enters note names near the cursor pitch, transposes, deletes', () => {
+    const e = new Editor(createSong({ tracks: ['guitar', 'keys'] }));
+    e.setCursor({ track: 1 });
+    expect(e.rowPitch()).toBe(60);
+    e.typeNoteName('e'); // E4 = 64 (nearest to C4)
+    e.typeNoteName('g'); // G4 = 67
+    e.typeNoteName('b'); // B4 = 71 (nearest to G4)
+    expect(e.beat.notes.map((n) => n.pitch)).toEqual([71, 67, 64]);
+    e.transposeNote(-1); // B4 -> Bb4
+    expect(e.rowPitch()).toBe(70);
+    e.transposeNote(-3); // would collide with G4 -> no-op
+    expect(e.beat.notes.map((n) => n.pitch)).toEqual([70, 67, 64]);
+    e.transposeNote(12);
+    expect(e.beat.notes.map((n) => n.pitch)).toEqual([82, 67, 64]);
+    e.moveString(1); // cursor down one semitone (81) -> no note there
+    e.deleteNote();
+    expect(e.beat.notes).toHaveLength(3);
+    e.setCursor({ string: 127 - 67 });
+    e.deleteNote();
+    expect(e.beat.notes.map((n) => n.pitch)).toEqual([82, 64]);
+    e.setDuration(2);
+    expect(e.beat.duration).toBe(2);
+    e.undo();
+    e.undo();
+    expect(e.beat.notes.map((n) => n.pitch)).toEqual([82, 67, 64]);
+  });
+});
+
+describe('default cursor rows', () => {
+  it('uses snare for drums and middle C for keys on load and when adding tracks', () => {
+    const e = new Editor(createSong({ tracks: ['guitar'] }));
+    e.load(createSong({ tracks: ['drums'] }));
+    expect(e.rowPitch()).toBe(38);
+    e.addTrack('keys');
+    expect(e.rowPitch()).toBe(60);
+  });
+});

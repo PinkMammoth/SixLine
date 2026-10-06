@@ -53,3 +53,15 @@ dialog { border: 1px solid #888; padding: 10px 12px; font: inherit; }
 dialog h3 { margin: 0 0 8px; font-size: 13px; }
 dialog label { display: flex; justify-content: space-between; gap: 10px; margin: 4px 0; align-items: center; }
 dialog .buttons { display: flex; justify-content: flex-end; gap: 6px; margin-top: 10px; }
+
+#drumgrid { border-top: 1px solid #c8c8c8; background: #fafafa; max-height: 260px; overflow: auto; flex: none; }
+#drumgrid table { border-collapse: collapse; font-size: 11px; }
+#drumgrid th { font-weight: normal; text-align: left; padding: 0 6px; white-space: nowrap; color: #333; height: 15px; }
+#drumgrid tr:first-child th { color: #777; text-align: center; font-size: 10px; }
+#drumgrid tr.cur th:first-child { background: #d6dfee; }
+#drumgrid th.cur { background: #d6dfee; }
+#drumgrid kbd { font: 9px monospace; color: #777; border: 1px solid #ccc; padding: 0 2px; border-radius: 2px; }
+#drumgrid td { width: 26px; height: 15px; border: 1px solid #ddd; background: #fff; cursor: pointer; }
+#drumgrid td.col { background: #eef3fc; }
+#drumgrid td.on { background: #333; }
+#drumgrid td.caret { outline: 2px solid #e2401c; outline-offset: -2px; }

@@ -1,5 +1,6 @@
 // Small modal forms built on <dialog>. Enter = OK, Esc = cancel.
 import { STANDARD_TUNINGS, type Track, type TrackType } from '../model/song';
+import { GM_PROGRAMS } from '../model/gm';
 
 type Field =
   | { name: string; label: string; type: 'text'; value: string }
@@ -103,7 +104,8 @@ const TUNING_PRESETS: Record<string, number[]> = {
 export async function trackDialog(t: Track) {
   const stringed = t.type === 'guitar' || t.type === 'bass';
   const fields: Field[] = [{ name: 'name', label: 'Name', type: 'text', value: t.name }];
-  if (t.type !== 'drums') fields.push({ name: 'program', label: 'MIDI program (0-127)', type: 'number', value: t.program, min: 0, max: 127 });
+  if (t.type !== 'drums')
+    fields.push({ name: 'program', label: 'Instrument (GM)', type: 'select', value: String(t.program), options: GM_PROGRAMS.map((n, i) => [String(i), `${i} ${n}`]) });
   if (stringed) {
     fields.push({ name: 'preset', label: 'Tuning preset', type: 'select', value: '', options: [['', '(custom)'], ...Object.keys(TUNING_PRESETS).map((k) => [k, k] as [string, string])] });
     fields.push({ name: 'tuning', label: 'Tuning (high → low)', type: 'text', value: formatTuning(t.tuning) });

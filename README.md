@@ -39,12 +39,33 @@ npm run test:e2e  # builds, then drives the real Electron app with Playwright
 | Alt+1..6 | whole, half, quarter, eighth, 16th, 32nd |
 | + / - | shorter / longer duration |
 | . | dotted |
-| T | triplet |
+| T (tab tracks), Shift+T (any track) | triplet |
 | Space | play / pause |
 | Ctrl+Z, Ctrl+Y / Ctrl+Shift+Z | undo, redo |
 | Ctrl+N / Ctrl+O / Ctrl+S / Ctrl+Shift+S | new, open, save, save as |
 | Ctrl+E | export Standard MIDI File (same generator as playback) |
 | F6 (or double-click a track) | track properties (name, MIDI program, tuning presets, capo, volume, pan) |
+
+### Drum tracks
+
+A grid of the current bar appears under the score: rows are kit pieces, columns are beats. Click a cell to toggle it. The data is ordinary beats with General MIDI percussion notes.
+
+| Key | Action |
+| --- | --- |
+| K S H O P C R B T M L F X | kick, snare, closed hat, open hat, pedal hat, crash, ride, ride bell, high/mid/low/floor tom, side stick (toggle on the current beat) |
+| ↑/↓ then Enter | choose a kit row and toggle it |
+| Del | remove the piece on the cursor row |
+
+### Keys / synth tracks (standard notation only)
+
+| Key | Action |
+| --- | --- |
+| A–G | toggle that note in the octave nearest the cursor pitch |
+| ↑/↓, Ctrl+↑/↓ | move the cursor pitch by a semitone / an octave |
+| Shift+↑/↓, Ctrl+Shift+↑/↓ | transpose the note under the cursor by a semitone / an octave |
+| Enter / Del | toggle / delete the note at the cursor pitch |
+
+The current pitch or kit piece is shown in the status bar. Pick a GM instrument with F6.
 
 Clicking in the score moves both the edit caret and the playback position. Click the time signature in the toolbar to change it from the current bar on. Add or remove tracks from the Track menu.
 

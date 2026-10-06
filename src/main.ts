@@ -8,7 +8,9 @@ import { exportMidi } from './io/midiExport';
 import { initialFile, openFile, saveFile, type OpenedFile } from './platform/host';
 import { buildMenus, type MenuDef } from './ui/menu';
 import { locateCaret } from './ui/caret';
-import { newSongDialog, timeSignatureDialog, trackDialog } from './ui/dialogs';
+import { newSongDialog, pitchName, timeSignatureDialog, trackDialog } from './ui/dialogs';
+import { bindDrumGrid, renderDrumGrid } from './ui/drumgrid';
+import { DRUM_BY_SHORTCUT, drumName } from './model/drums';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -278,10 +280,19 @@ window.addEventListener('keydown', (e) => {
     else if (k === 'ArrowLeft') editor.moveBar(-1);
     else if (k === 'Delete' || k === 'Backspace') editor.deleteBeat();
     else if (k === 'Insert') editor.insertBars(editor.cursor.bar, 1);
+    else if (k === 'ArrowUp' && e.shiftKey) editor.transposeNote(12);
+    else if (k === 'ArrowDown' && e.shiftKey) editor.transposeNote(-12);
+    else if (k === 'ArrowUp') editor.moveString(-12);
+    else if (k === 'ArrowDown') editor.moveString(12);
     else handled = false;
   } else if (e.altKey && DUR_KEYS[k]) {
     editor.setDuration(DUR_KEYS[k]);
   } else if (k === ' ') playPause();
+  else if (editor.track.type === 'drums' && k.length === 1 && DRUM_BY_SHORTCUT.has(k.toLowerCase()) && !e.altKey) editor.togglePitch(DRUM_BY_SHORTCUT.get(k.toLowerCase())!.key);
+  else if (editor.track.type === 'keys' && /^[a-gA-G]$/.test(k) && !e.altKey) editor.typeNoteName(k);
+  else if (k === 'Enter') editor.toggleAtCursor();
+  else if (k === 'ArrowUp' && e.shiftKey) editor.transposeNote(1);
+  else if (k === 'ArrowDown' && e.shiftKey) editor.transposeNote(-1);
   else if (k === 'ArrowRight') editor.moveRight();
   else if (k === 'ArrowLeft') editor.moveLeft();
   else if (k === 'ArrowUp') editor.moveString(-1);
@@ -296,7 +307,7 @@ window.addEventListener('keydown', (e) => {
   else if (k === '+' || k === '=') editor.stepDuration(1);
   else if (k === '-' || k === '_') editor.stepDuration(-1);
   else if (k === '.') editor.toggleDot();
-  else if (k === 't' || k === 'T') editor.toggleTriplet();
+  else if (k === 'T' || (k === 't' && isStringed(editor.track))) editor.toggleTriplet();
   else if (k === 'Escape') closeMenus();
   else if (k === 'F6') editTrack();
   else handled = false;
@@ -457,7 +468,12 @@ function updateStatus() {
   const tr = editor.track;
   const beat = editor.beat;
   const note = editor.noteAtCursor();
-  const row = isStringed(tr) ? `String ${c.string + 1}${note ? ` fret ${note.fret}` : ''}` : '';
+  const row = isStringed(tr)
+    ? `String ${c.string + 1}${note ? ` fret ${note.fret}` : ''}`
+    : tr.type === 'drums'
+      ? `${drumName(editor.rowPitch())}${note ? ' ●' : ''}`
+      : `Pitch ${pitchName(editor.rowPitch())}${note ? ' ●' : ''}`;
+  renderDrumGrid($('drumgrid'), editor);
   const over = editor.barOverfull() ? '<span class="warn">bar too long</span>' : '';
   $('status').innerHTML = `
     <span>Bar ${c.bar + 1}/${editor.song.masterBars.length}</span>
@@ -480,6 +496,8 @@ function fmtTime(ms: number) {
 }
 
 // ------------------------------------------------------------------ boot
+
+bindDrumGrid($('drumgrid'), editor);
 
 renderTracks();
 updateStatus();

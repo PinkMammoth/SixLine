@@ -2,12 +2,13 @@
 // All document mutation goes through Editor.edit(); UI code never mutates the Song directly.
 import { createTrack, emptyMeasure, isStringed, type Beat, type Duration, type Measure, type Song, type Track, type TrackType } from '../model/song';
 import { barTicks, beatTicks, voiceTicks } from '../model/rhythm';
+import { DRUM_KIT, SNARE_ROW } from '../model/drums';
 
 export interface Cursor {
   track: number;
   bar: number;
   beat: number;
-  /** String index (0 = highest) for stringed tracks; row index for drums. */
+  /** Vertical row: string index (0 = highest) on tab tracks, DRUM_KIT index on drums, 127 - pitch on keys. */
   string: number;
 }
 
@@ -57,7 +58,7 @@ export class Editor {
     this.song = song;
     this.undoStack = [];
     this.redoStack = [];
-    this.cursor = { track: 0, bar: 0, beat: 0, string: 0 };
+    this.cursor = { track: 0, bar: 0, beat: 0, string: song.tracks[0] ? this.defaultRow(song.tracks[0]) : 0 };
     this.dirty = false;
     this.emit({ firstBar: 0, structural: true });
     this.emitCursor();
@@ -83,7 +84,27 @@ export class Editor {
   }
   /** Number of rows the cursor moves over vertically. */
   get rowCount() {
-    return isStringed(this.track) ? this.track.tuning.length : 1;
+    const t = this.track;
+    return isStringed(t) ? t.tuning.length : t.type === 'drums' ? DRUM_KIT.length : 128;
+  }
+
+  /** MIDI/GM key addressed by a row on drum and keys tracks. */
+  rowPitch(row = this.cursor.string, track: Track = this.track): number {
+    return track.type === 'drums' ? DRUM_KIT[row]?.key ?? 38 : 127 - row;
+  }
+
+  rowForPitch(pitch: number, track: Track = this.track): number {
+    if (track.type === 'drums') {
+      const i = DRUM_KIT.findIndex((d) => d.key === pitch);
+      return i >= 0 ? i : this.cursor.string;
+    }
+    return 127 - pitch;
+  }
+
+  private defaultRow(t: Track) {
+    if (t.type === 'drums') return SNARE_ROW;
+    if (t.type === 'keys') return 127 - 60;
+    return 0;
   }
 
   // ------------------------------------------------------------ core edit machinery
@@ -172,7 +193,10 @@ export class Editor {
   }
 
   setCursor(c: Partial<Cursor>) {
+    const from = this.track;
     Object.assign(this.cursor, c);
+    const to = this.song.tracks[this.cursor.track];
+    if (c.string === undefined && to && to !== from && to.type !== from?.type) this.cursor.string = this.defaultRow(to);
     this.pendingDigit = null;
     this.clampCursor();
     this.emitCursor();
@@ -189,7 +213,9 @@ export class Editor {
   }
 
   noteAtCursor() {
-    return this.beat.notes.find((n) => n.string === this.cursor.string);
+    if (isStringed(this.track)) return this.beat.notes.find((n) => n.string === this.cursor.string);
+    const p = this.rowPitch();
+    return this.beat.notes.find((n) => n.pitch === p);
   }
 
   // ------------------------------------------------------------ navigation
@@ -269,20 +295,54 @@ export class Editor {
     );
   }
 
-  /** Toggle a drum/keys pitch at the cursor beat. */
+  /** Toggle a drum/keys pitch at the cursor beat and move the row cursor to it. */
   togglePitch(pitch: number) {
+    if (isStringed(this.track)) return;
     this.edit(`Note ${pitch}`, 'measure', () => {
       const b = this.beat;
       const i = b.notes.findIndex((n) => n.pitch === pitch);
       if (i >= 0) b.notes.splice(i, 1);
-      else b.notes.push({ pitch, velocity: 95 });
+      else {
+        b.notes.push({ pitch, velocity: 95 });
+        b.notes.sort((x, y) => y.pitch! - x.pitch!);
+      }
+      this.cursor.string = this.rowForPitch(pitch);
+    });
+  }
+
+  /** Drums/keys: toggle the note on the cursor row. */
+  toggleAtCursor() {
+    if (!isStringed(this.track)) this.togglePitch(this.rowPitch());
+  }
+
+  /** Keys: enter note name (a-g) in the octave nearest the cursor pitch. */
+  typeNoteName(letter: string) {
+    if (this.track.type !== 'keys') return;
+    const pc = { c: 0, d: 2, e: 4, f: 5, g: 7, a: 9, b: 11 }[letter.toLowerCase()];
+    if (pc === undefined) return;
+    const ref = this.rowPitch();
+    let best = pc;
+    for (let p = pc; p <= 127; p += 12) if (Math.abs(p - ref) < Math.abs(best - ref)) best = p;
+    this.togglePitch(best);
+  }
+
+  /** Keys: move the note under the cursor by `delta` semitones (cursor follows). */
+  transposeNote(delta: number) {
+    if (this.track.type !== 'keys') return;
+    const n = this.noteAtCursor();
+    const to = (n?.pitch ?? 0) + delta;
+    if (!n || to < 0 || to > 127 || this.beat.notes.some((x) => x.pitch === to)) return;
+    this.edit('Transpose note', 'measure', () => {
+      this.noteAtCursor()!.pitch = to;
+      this.beat.notes.sort((x, y) => y.pitch! - x.pitch!);
+      this.cursor.string = this.rowForPitch(to);
     });
   }
 
   deleteNote() {
     const n = this.noteAtCursor();
     if (!n) {
-      // nothing on this string: if the whole beat is a rest, remove the beat instead (GP-like)
+      // nothing on this row: if the whole beat is a rest, remove the beat instead (GP-like)
       if (!this.beat.notes.length && this.beats.length > 1) this.deleteBeat();
       return;
     }
@@ -380,7 +440,7 @@ export class Editor {
       const t = createTrack(type, s.masterBars.length);
       if (n) t.name += ' ' + (n + 1);
       s.tracks.push(t);
-      this.cursor = { track: s.tracks.length - 1, bar: this.cursor.bar, beat: 0, string: 0 };
+      this.cursor = { track: s.tracks.length - 1, bar: this.cursor.bar, beat: 0, string: this.defaultRow(t) };
     });
   }
 

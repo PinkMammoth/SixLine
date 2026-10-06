@@ -317,6 +317,129 @@ console.log('Milestone 2: new songs');
 }
 
 // ---------------------------------------------------------------------------------------------
+console.log('Milestone 3: drum and keys entry');
+{
+  const { app, win, errors } = await launch(path.join(root, 'fixtures/fixture.gp5'));
+  const exportParsed = async () => {
+    const f = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'tabedit-m3-')), 'out.mid');
+    await app.evaluate(({ dialog }, f) => {
+      dialog.showSaveDialog = async () => ({ canceled: false, filePath: f });
+    }, f);
+    await win.keyboard.press('Control+e');
+    await win.waitForFunction(() => document.getElementById('msg')?.textContent.includes('Exported MIDI'), null, { timeout: 10000 });
+    await win.evaluate(() => (document.getElementById('msg').textContent = ''));
+    const midi = parseMidi(fs.readFileSync(f));
+    const notes = [];
+    midi.tracks.forEach((tr, ti) => {
+      let t = 0;
+      for (const e of tr) {
+        t += e.deltaTime;
+        if (e.type === 'noteOn' && e.velocity > 0) notes.push({ track: ti, ch: e.channel, key: e.noteNumber, t });
+      }
+    });
+    return { midi, notes };
+  };
+  await step('new drum song: letter keys enter kit pieces; grid shows them; render updates', async () => {
+    await win.keyboard.press('Control+n');
+    await win.waitForSelector('dialog[open]');
+    await win.selectOption('#f-type', 'drums');
+    await win.fill('#f-bars', '2');
+    await win.click('dialog button[value=ok]');
+    await waitIdle(win);
+    assert.ok(await win.isVisible('#drumgrid table'), 'drum grid visible');
+    assert.match(await win.textContent('#status'), /Snare/);
+    await win.keyboard.press('Alt+4'); // eighths
+    for (const keys of [['k', 'h'], ['h'], ['s', 'h'], ['h'], ['k', 'h'], ['k', 'h'], ['s', 'h'], ['o']]) {
+      for (const k of keys) await win.keyboard.press(k);
+      await win.keyboard.press('ArrowRight');
+    }
+    await waitIdle(win);
+    const r = await win.evaluate(() => {
+      const t = window.tabedit;
+      return {
+        model: t.editor.song.tracks[0].measures[0].voices[0].map((b) => b.notes.map((n) => n.pitch).sort((a, b) => a - b).join('+')),
+        rendered: t.score.tracks[0].staves[0].bars[0].voices[0].beats.map((b) => b.notes.map((n) => n.percussionArticulation).sort((a, b) => a - b).join('+')),
+        cursor: t.editor.cursor,
+        cells: document.querySelectorAll('#drumgrid td.on').length,
+      };
+    });
+    const want = ['36+42', '42', '38+42', '42', '36+42', '36+42', '38+42', '46'];
+    assert.deepEqual(r.model, want);
+    assert.deepEqual(r.rendered, want);
+    assert.equal(r.cursor.bar, 1, 'full bar advanced to bar 2');
+  });
+  await step('clicking a drum grid cell toggles that piece; Delete removes on the cursor row; undo', async () => {
+    await win.keyboard.press('PageUp');
+    const cell = win.locator('#drumgrid tr', { hasText: 'Crash' }).first().locator('td').nth(0);
+    await cell.dispatchEvent('mousedown');
+    let beat0 = await win.evaluate(() => window.tabedit.editor.song.tracks[0].measures[0].voices[0][0].notes.map((n) => n.pitch).sort((a, b) => a - b));
+    assert.deepEqual(beat0, [36, 42, 49]);
+    assert.match(await win.textContent('#status'), /Crash/);
+    await win.keyboard.press('Delete');
+    beat0 = await win.evaluate(() => window.tabedit.editor.song.tracks[0].measures[0].voices[0][0].notes.map((n) => n.pitch).sort((a, b) => a - b));
+    assert.deepEqual(beat0, [36, 42]);
+    await win.keyboard.press('Control+z');
+    await win.keyboard.press('Control+z');
+    await waitIdle(win);
+    await win.screenshot({ path: path.join(out, 'm3-drums.png') });
+  });
+  await step('drum edits play back and export on channel 10 (GM)', async () => {
+    await win.waitForFunction(() => window.tabedit.api.isReadyForPlayback, null, { timeout: 20000 });
+    await win.keyboard.press('Space');
+    await win.waitForFunction(() => window.tabedit.playerState === 1, null, { timeout: 5000 });
+    await win.waitForTimeout(800);
+    await win.keyboard.press('Space');
+    assert.ok((await win.evaluate(() => window.tabedit.playerPos.current)) > 300, 'playback advanced');
+    const { notes } = await exportParsed();
+    const bar0 = notes.filter((n) => n.t < 3840).map((n) => `${n.ch}:${n.key}@${n.t}`).sort();
+    assert.deepEqual(bar0, ['9:36@0', '9:36@1920', '9:36@2400', '9:38@2880', '9:38@960', '9:42@0', '9:42@1440', '9:42@1920', '9:42@2400', '9:42@2880', '9:42@480', '9:42@960', '9:46@3360'].sort());
+  });
+  await step('keys track: note names, transpose, duration, delete; render + export', async () => {
+    await win.locator('.menu .title', { hasText: 'Track' }).dispatchEvent('mousedown');
+    await win.locator('.menu.open .item', { hasText: 'Add keys/synth track' }).dispatchEvent('mousedown');
+    await waitIdle(win);
+    await win.evaluate(() => window.tabedit.editor.setCursor({ bar: 0, beat: 0 }));
+    assert.match(await win.textContent('#status'), /Pitch C4/);
+    assert.ok(!(await win.isVisible('#drumgrid table')), 'drum grid hidden on keys');
+    await win.keyboard.press('Alt+2'); // half notes
+    for (const k of ['c', 'e', 'g']) await win.keyboard.press(k);
+    await win.keyboard.press('Shift+ArrowDown'); // G4 -> F#4
+    await win.keyboard.press('ArrowRight');
+    await win.keyboard.press('d');
+    await win.keyboard.press('f');
+    await win.keyboard.press('a');
+    await win.keyboard.press('Delete'); // remove the A under the cursor
+    await waitIdle(win);
+    const r = await win.evaluate(() => {
+      const t = window.tabedit;
+      const ti = t.editor.cursor.track;
+      return {
+        model: t.editor.song.tracks[ti].measures[0].voices[0].map((b) => [b.duration, b.notes.map((n) => n.pitch)]),
+        rendered: t.score.tracks[ti].staves[0].bars[0].voices[0].beats.map((b) => b.notes.map((n) => n.realValue).sort((a, b) => b - a)),
+        tab: t.score.tracks[ti].staves[0].showTablature,
+      };
+    });
+    assert.deepEqual(r.model, [[2, [66, 64, 60]], [2, [65, 62]]]);
+    assert.deepEqual(r.rendered, [[66, 64, 60], [65, 62]]);
+    assert.equal(r.tab, false, 'keys tracks show notation only');
+    await win.screenshot({ path: path.join(out, 'm3-keys.png') });
+  });
+  await step('keys MIDI program selection (GM list) reaches the export', async () => {
+    await win.keyboard.press('F6');
+    await win.waitForSelector('dialog[open]');
+    await win.selectOption('#f-program', '81');
+    await win.click('dialog button[value=ok]');
+    await waitIdle(win);
+    const { midi, notes } = await exportParsed();
+    const pc = midi.tracks[1].find((e) => e.type === 'programChange');
+    assert.equal(pc.programNumber, 81);
+    assert.deepEqual(notes.filter((n) => n.track === 1).map((n) => `${n.key}@${n.t}`).sort(), ['60@0', '62@1920', '64@0', '65@1920', '66@0'].sort());
+  });
+  await step('no page errors', async () => assert.deepEqual(errors, []));
+  await app.close();
+}
+
+// ---------------------------------------------------------------------------------------------
 console.log('Milestone 4: MIDI export');
 {
   const priv = path.join(root, 'gp5-examples/Tower10.gp5');
