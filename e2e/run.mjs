@@ -115,9 +115,21 @@ for (const f of ['fixtures/fixture.gp3', 'fixtures/fixture.gp4']) {
     assert.notEqual(cursorAfter, cursorBefore, 'beat cursor should move');
     await win.screenshot({ path: path.join(out, 'm0-playing.png') });
   });
+  await step('switching tracks while playing keeps playback running', async () => {
+    for (const i of [1, 2, 0]) {
+      const before = await win.evaluate(() => window.sixline.playerPos.current);
+      await win.locator('.trk').nth(i).click();
+      await win.waitForFunction((i) => window.sixline.api.tracks[0]?.index === i && !window.sixline.rendering, i, { timeout: 10000 });
+      await win.waitForTimeout(400);
+      const r = await win.evaluate(() => ({ state: window.sixline.playerState, pos: window.sixline.playerPos.current }));
+      assert.equal(r.state, 1, `still playing after switching to track ${i}`);
+      assert.ok(r.pos > before, `position advanced (${before} -> ${r.pos})`);
+    }
+  });
   await step('Space pauses; position holds', async () => {
     await win.keyboard.press('Space');
     await win.waitForFunction(() => window.sixline.playerState === 0, null, { timeout: 5000 });
+    await win.waitForTimeout(300); // the synth reports its buffered-ahead position correction just after pausing
     const a = await win.evaluate(() => window.sixline.playerPos.current);
     await win.waitForTimeout(500);
     const b = await win.evaluate(() => window.sixline.playerPos.current);

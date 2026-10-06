@@ -111,14 +111,17 @@ function flushRender() {
   renderQueued = false;
   renderStart = performance.now();
   const track = editor.cursor.track;
+  const docChanged = !score || pendingStructural || pendingFirstBar !== null;
   const incremental = track === renderedTrack && !pendingStructural && pendingFirstBar !== null;
   const hints = incremental ? { reuseViewport: true, firstChangedMasterBar: pendingFirstBar! } : undefined;
   pendingFirstBar = null;
   pendingStructural = false;
-  score = songToScore(editor.song, api.settings);
+  // Only a document change needs a new alphaTab Score. Showing another track re-renders the same Score,
+  // which alphaTab treats as a view change and leaves the player (and playback position) alone.
+  if (docChanged) score = songToScore(editor.song, api.settings);
   renderedTrack = track;
   rendering = true;
-  api.renderScore(score, [track], hints);
+  api.renderScore(score!, [track], hints);
   renderTracks();
   updateToolbar();
 }
