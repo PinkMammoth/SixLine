@@ -14,10 +14,12 @@ import { newSongDialog, pitchName, timeSignatureDialog, trackDialog, unsavedDial
 import { selectionRange } from './editor/selection';
 import type { Passage } from './editor/clipboard';
 import { PracticeState, CountIn, tempoAtBar, clampLoopTick } from './playback/practice';
+import { TransportState, transportDestination } from './playback/transport';
+import { bindScoreSelection } from './ui/scoreSelection';
 import { Metronome, elapsedMs, type ClickBar } from './playback/metronome';
 import { bindDrumGrid, renderDrumGrid } from './ui/drumgrid';
 import { DRUM_BY_SHORTCUT, drumName } from './model/drums';
-import { bindDrumScore, renderDrumScore, updateDrumSelection, drumCaret } from './ui/drumscore';
+import { hitDrumScore, renderDrumScore, updateDrumSelection, drumCaret } from './ui/drumscore';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -30,6 +32,7 @@ interface Doc {
   fileName: string;
   scrollTop: number;
   practice: PracticeState;
+  transport: TransportState;
 }
 const docs: Doc[] = [];
 let active: Doc = newDoc(createSong({ tracks: ['guitar'] }), null, 'Untitled.tabproj');
@@ -68,6 +71,7 @@ let drumInput: DrumMode = preference('sixline.drumInput', 'letters') === 'number
 let drumView: DrumView = preference('sixline.drumView', 'notation') === 'numbers' ? 'numbers' : 'notation';
 let drumEntryTimer = 0;
 let fretEntryTimer = 0;
+let scorePointer: ReturnType<typeof bindScoreSelection> | undefined;
 const numberScoreVisible = () => editor.track.type === 'drums' && drumView === 'numbers';
 
 // ------------------------------------------------------------------ alphaTab
@@ -102,7 +106,9 @@ api.renderFinished.on(() => {
   updateDrumView(true);
   updateCaret();
   updateStatus();
-  if (renderQueued) flushRender();
+  // Finish alphaTab's current render callback before starting another score/layout.
+  // Re-entering its renderer here can overwrite the new bounds/height with the old score.
+  if (renderQueued) requestAnimationFrame(flushRender);
 });
 api.playerStateChanged.on((e) => {
   playerState = e.state;
@@ -131,6 +137,7 @@ api.playerPositionChanged.on((e) => {
     seek.value = String(e.currentTime);
   }
   $('time').textContent = `${fmtTime(e.currentTime)} / ${fmtTime(e.endTime)}`;
+  updateTransportButtons();
   if (playerState === 1 && active.practice.metronome) metronome.update(clickBars, e.currentTick, active.practice.speed, active.practice.looping ? active.practice.loop : null, e.isSeek);
 });
 // PlayerReady covers MIDI regeneration without AlphaTab 1.8's recursive loadedMidiInfo getter.
@@ -143,8 +150,10 @@ api.playerReady.on(() => {
     api.tickPosition = Math.min(saved.tick, Math.max(0, (api.tickCache?.masterBars.at(-1)?.end ?? saved.tick + 1) - 1));
     if (saved.playing) api.play();
   }
+  updateTransportButtons();
 });
 api.soundFontLoaded.on(() => updateStatus());
+api.playerFinished.on(() => { if (!active.practice.looping) active.transport.stopped(); });
 api.error.on((e) => {
   console.error('alphaTab error', e);
   setMessage('Error: ' + (e as Error).message);
@@ -154,6 +163,9 @@ api.error.on((e) => {
 
 function newDoc(song: Song, filePath: string | null, fileName: string): Doc {
   const ed = new Editor(song);
+  const doc = { editor: ed, filePath, fileName, scrollTop: 0, practice: new PracticeState(), transport: new TransportState() };
+  const caretKey = () => `${ed.cursor.bar}:${ed.cursor.beat}:${ed.selection ? JSON.stringify({anchor:ed.selection.anchor,focus:ed.selection.focus,kind:ed.selection.kind}) : ''}`;
+  let lastCaret = caretKey();
   // listeners are per editor; only the active document drives the view
   ed.onChange((c) => {
     renderTabs();
@@ -166,23 +178,28 @@ function newDoc(song: Song, filePath: string | null, fileName: string): Doc {
     scheduleRender();
   });
   ed.onCursor(() => {
+    const nextCaret = caretKey();
+    if (nextCaret !== lastCaret && !countIn.active) doc.transport.chooseCaret(playerState === 1);
+    lastCaret = nextCaret;
     if (ed !== editor) return;
     if (editor.cursor.track !== renderedTrack) scheduleRender();
     updateCaret();
     updateStatus();
   });
-  return { editor: ed, filePath, fileName, scrollTop: 0, practice: new PracticeState() };
+  return doc;
 }
 
 /** Show a document: everything (render, tracks, status, playback) switches to it. */
 function activate(doc: Doc) {
   if (doc === active && editor === doc.editor && score) return;
   active.scrollTop = $('score').scrollTop;
+  scorePointer?.cancel();
   api.stop();
   countIn.cancel();
   metronome.cancel();
   resumePlayback = null;
   active = doc;
+  active.transport.stopped();
   editor = doc.editor;
   editor.clearDrumDigits();
   applyPractice();
@@ -264,7 +281,7 @@ function scheduleRender() {
 }
 
 function flushRender() {
-  if (!renderQueued) return;
+  if (!renderQueued || rendering) return;
   renderQueued = false;
   renderStart = performance.now();
   const track = editor.cursor.track;
@@ -272,7 +289,8 @@ function flushRender() {
   const incremental = track === renderedTrack && !pendingStructural && pendingFirstBar !== null;
   // Same document, track and shape (e.g. tempo, time signature, mixer changes): keep the current drawing on
   // screen while re-rendering instead of blanking it (flicker). alphaTab cannot do this across layout changes.
-  const shape = `${editor.song.tracks.length}:${editor.song.masterBars.length}`;
+  const beatShape = editor.track.measures.map(m => m.voices.map(v => v.length).join(',')).join(';');
+  const shape = `${editor.song.tracks.length}:${editor.song.masterBars.length}:${beatShape}`;
   const sameLayout = track === renderedTrack && !pendingReset && shape === renderedShape;
   const hints = incremental
     ? { reuseViewport: true, firstChangedMasterBar: pendingFirstBar! }
@@ -325,7 +343,7 @@ function updateCaret() {
   }
   Object.assign(el.style, { display: 'block', left: box.x + 'px', top: box.y + 'px', width: box.w + 'px', height: box.h + 'px' });
   el.classList.toggle('beatonly', !box.row);
-  if (playerState !== 1) scrollIntoView(box);
+  if (playerState !== 1 && !scorePointer?.active) scrollIntoView(box);
 }
 
 function updateSelection() {
@@ -412,19 +430,34 @@ function scrollIntoView(b: { x: number; y: number; w: number; h: number }) {
   else if (b.y + b.h > sc.scrollTop + sc.clientHeight - pad) sc.scrollTop = b.y + b.h - sc.clientHeight + pad;
 }
 
-// Edit interaction is independent of alphaTab's seeking and playback-range interaction.
-$('at').addEventListener('mousedown', (ev) => {
-  if (!api.boundsLookup || !score) return;
+// Clicking chooses the next playback start; dragging never seeks or rebuilds the player.
+function scoreHit(clientX: number, clientY: number, nearest: boolean) {
+  if (numberScoreVisible()) return hitDrumScore($('drumscore'),editor,clientX,clientY,nearest);
+  if (!api.boundsLookup || !score || rendering || renderQueued) return null;
   const r = $('at').getBoundingClientRect();
-  const x = ev.clientX - r.left;
-  const y = ev.clientY - r.top;
-  const beat = api.boundsLookup.getBeatAtPos(x, y);
-  if (!beat || beat.voice.index !== 0) return;
+  const x = clientX - r.left, y = clientY - r.top;
+  let beat = api.boundsLookup.getBeatAtPos(x,y);
+  if (!beat && nearest) {
+    const distance = (value: number, start: number, length: number) => Math.max(start - value, 0, value - start - length);
+    const systems = api.boundsLookup.staffSystems;
+    const system = systems.reduce<typeof systems[number] | null>((best,s) => !best || distance(y,s.realBounds.y,s.realBounds.h) < distance(y,best.realBounds.y,best.realBounds.h) ? s : best,null);
+    const bar = system?.bars.reduce<typeof system.bars[number] | null>((best,b) => !best || distance(x,b.realBounds.x,b.realBounds.w) < distance(x,best.realBounds.x,best.realBounds.w) ? b : best,null);
+    if (bar) beat = score.tracks[editor.cursor.track].staves[0].bars[bar.index]?.voices[0].beats[0] ?? null;
+  }
+  if (!beat) return null;
+  const bar = beat.voice.bar.index;
+  const primary = score.tracks[editor.cursor.track].staves[0].bars[bar].voices[0].beats;
+  // Choose the primary-voice beat at this horizontal position, including bar whitespace.
+  for (const candidate of primary) {
+    const bounds = api.boundsLookup.findBeats(candidate);
+    if (bounds?.length && (candidate.index === 0 || bounds[0].realBounds.x <= x)) beat = candidate;
+  }
   let string = editor.cursor.string;
   const tr = editor.track;
   const clickedNote = api.boundsLookup.getNoteAtPos(beat, x, y);
   if (!isStringed(tr) && clickedNote) string = editor.rowForPitch(tr.type === 'drums' ? clickedNote.percussionArticulation : clickedNote.realValue);
-  if (isStringed(tr)) {
+  if (isStringed(tr) && clickedNote) string = tr.tuning.length - clickedNote.string;
+  else if (isStringed(tr)) {
     // choose the nearest tab line
     let best = Infinity;
     for (let s = 0; s < tr.tuning.length; s++) {
@@ -437,10 +470,18 @@ $('at').addEventListener('mousedown', (ev) => {
       }
     }
   }
-  const previousSelection = editor.selection;
-  editor.setCursor({ bar: beat.voice.bar.index, beat: Math.min(beat.index, editor.track.measures[beat.voice.bar.index].voices[0].length - 1), string }, ev.shiftKey);
-  if (ev.ctrlKey || ev.metaKey) editor.toggleSelectionRow(isStringed(tr) ? string : editor.rowPitch(), previousSelection);
-});
+  return {track:editor.cursor.track,bar,beat:Math.min(beat.index,editor.track.measures[bar].voices[0].length - 1),string};
+}
+scorePointer = bindScoreSelection({surface:$('sheet'),scroller:$('score'),getEditor:() => editor,hitTest:scoreHit,
+  choosePlayback:() => {
+    closeMenus();
+    if (!countIn.active) active.transport.chooseCaret(playerState === 1);
+    if (api.settings.player.scrollMode !== at.ScrollMode.Off) { api.settings.player.scrollMode = at.ScrollMode.Off; api.updateSettings(); }
+  },finished:() => {
+    const mode = playerState === 1 && !numberScoreVisible() ? at.ScrollMode.Continuous : at.ScrollMode.Off;
+    if (api.settings.player.scrollMode !== mode) { api.settings.player.scrollMode = mode; api.updateSettings(); }
+    updateCaret();
+  }});
 
 // ------------------------------------------------------------------ files
 
@@ -553,12 +594,13 @@ async function editTimeSignature() {
 function playPause() {
   if (countIn.active) { countIn.cancel(); updateToolbar(); return; }
   if (playerState === 1) api.pause();
-  else startPlayback(false);
+  else startPlayback(active.transport.fromCaret);
 }
 function stop() {
   countIn.cancel();
   resumePlayback = null;
   api.stop();
+  active.transport.stopped();
   updateToolbar();
 }
 
@@ -575,6 +617,37 @@ function caretTick() {
   const b = cursorBeat();
   if (!b || !api.tickCache) throw new Error('Wait for the score to finish loading.');
   return api.tickCache.getBeatStart(b);
+}
+function playbackCaretTick() {
+  if (editor.selection && score && api.tickCache) {
+    const s = editor.selection, { start } = selectionRange(editor.song,s);
+    return s.kind === 'measures' ? api.tickCache.getMasterBar(score.masterBars[start.bar]).start
+      : api.tickCache.getBeatStart(score.tracks[s.track].staves[0].bars[start.bar].voices[0].beats[start.beat]);
+  }
+  return caretTick();
+}
+function transportTick() {
+  return playerState !== 1 && active.transport.fromCaret && api.isReadyForPlayback && !renderQueued && !rendering && api.tickCache && cursorBeat() ? playbackCaretTick() : api.tickPosition;
+}
+function moveTransport(direction: 'first' | -1 | 1) {
+  command(() => {
+    const target = transportDestination(api.tickCache?.masterBars ?? [],transportTick(),direction);
+    countIn.cancel(); resumePlayback = null;
+    const p = active.practice;
+    if (p.looping && p.loop && (target.tick < p.loop.startTick || target.tick >= p.loop.endTick)) { p.looping = false; applyPractice(); }
+    editor.setCursor({bar:target.bar,beat:0});
+    api.tickPosition = target.tick;
+    active.transport.usePosition();
+    updateToolbar();
+  });
+}
+function updateTransportButtons() {
+  const bars = api.tickCache?.masterBars ?? [];
+  const tick = transportTick();
+  const ready = api.isReadyForPlayback && bars.length > 0 && !renderQueued && !rendering;
+  $('b-first').toggleAttribute('disabled',!ready);
+  $('b-previous').toggleAttribute('disabled',!ready || tick < (bars[1]?.start ?? Infinity));
+  $('b-next').toggleAttribute('disabled',!ready || tick >= (bars.at(-1)?.start ?? 0));
 }
 function loopSelection() {
   command(() => {
@@ -617,13 +690,7 @@ function startPlayback(fromCaret: boolean) {
     countIn.cancel();
     if (fromCaret) {
       if (playerState === 1) api.pause();
-      let tick = caretTick();
-      if (editor.selection && score && api.tickCache) {
-        const { start } = selectionRange(editor.song, editor.selection);
-        const b = score.tracks[editor.selection.track].staves[0].bars[start.bar].voices[0].beats[start.beat];
-        tick = api.tickCache.getBeatStart(b);
-      }
-      api.tickPosition = tick;
+      api.tickPosition = playbackCaretTick();
     }
     const p = active.practice;
     if (p.metronome) metronome.ready().catch(e => setMessage('Metronome failed: ' + e.message));
@@ -638,6 +705,7 @@ function startPlayback(fromCaret: boolean) {
       countIn.start(mb.num, mb.den, tempo, p.countIn, () => p.speed, () => { api.tickPosition = startTick; api.play(); updateToolbar(); }).catch(e => { countIn.cancel(); setMessage('Count-in failed: ' + e.message); updateToolbar(); });
       updateToolbar();
     } else api.play();
+    active.transport.usePosition();
   });
 }
 async function goToMeasure() {
@@ -893,8 +961,11 @@ const { closeMenus } = buildMenus($('menubar'), menus);
 function buildToolbar() {
   const tb = $('toolbar');
   tb.innerHTML = `
+    <button id="b-first" title="Return to bar 1" aria-label="Return to bar 1">|◀</button>
+    <button id="b-previous" title="Back one bar" aria-label="Back one bar">◀</button>
     <button id="b-play" title="Play/Pause (Space)">▶</button>
     <button id="b-stop" title="Stop">■</button>
+    <button id="b-next" title="Forward one bar" aria-label="Forward one bar">▶|</button>
     <input id="seek" type="range" min="0" max="1" value="0" title="Seek">
     <span id="time" class="lbl">0:00 / 0:00</span>
     <span class="sep"></span>
@@ -950,13 +1021,16 @@ function buildToolbar() {
   practice.querySelectorAll('button').forEach(b => b.addEventListener('mouseup', () => b.blur()));
   $('b-play').onclick = playPause;
   $('b-stop').onclick = stop;
+  $('b-first').onclick = () => moveTransport('first');
+  $('b-previous').onclick = () => moveTransport(-1);
+  $('b-next').onclick = () => moveTransport(1);
   $('b-dot').onclick = () => editor.toggleDot();
   $('b-trip').onclick = () => editor.toggleTriplet();
   $('b-undo').onclick = () => editor.undo();
   $('b-redo').onclick = () => editor.redo();
   tb.querySelectorAll<HTMLButtonElement>('[data-dur]').forEach((b) => (b.onclick = () => editor.setDuration(Number(b.dataset.dur) as Duration)));
   const seek = $<HTMLInputElement>('seek');
-  seek.oninput = () => (api.timePosition = Number(seek.value));
+  seek.oninput = () => { countIn.cancel(); active.transport.usePosition(); api.timePosition = Number(seek.value); updateToolbar(); };
   $('tsig').onclick = editTimeSignature;
   $('tsig').title = 'Time signature (click to change)';
   const tempo = $<HTMLInputElement>('tempo');
@@ -978,6 +1052,7 @@ function buildToolbar() {
 }
 
 function updateToolbar() {
+  updateTransportButtons();
   $('b-play').textContent = playerState === 1 ? '❚❚' : '▶';
   $('b-play').classList.toggle('on', playerState === 1);
   const tempo = $<HTMLInputElement>('tempo');
@@ -1099,7 +1174,6 @@ window.addEventListener('beforeunload', (e) => {
 renderTabs();
 
 bindDrumGrid($('drumgrid'), () => editor);
-bindDrumScore($('drumscore'), () => editor);
 
 renderTracks();
 updateStatus();

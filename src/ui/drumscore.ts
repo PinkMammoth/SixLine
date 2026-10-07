@@ -119,16 +119,22 @@ export function drumCaret(el: HTMLElement, editor: Editor): CaretBox | null {
   return { x: r.left - origin.left - 2, y: r.top - origin.top - 2, w: r.width + 4, h: r.height + 4, row: target !== cell };
 }
 
-export function bindDrumScore(el: HTMLElement, getEditor: () => Editor) {
-  el.addEventListener('mousedown', ev => {
-    if (ev.button !== 0) return;
-    const target = ev.target as HTMLElement;
-    const cell = target.closest<HTMLElement>('.drum-beat');
-    if (!cell || cell.dataset.voice !== '0') return;
-    ev.preventDefault();
-    const editor = getEditor(), previous = editor.selection;
-    const note = target.closest<HTMLElement>('[data-pitch]');
-    editor.setCursor({ bar: Number(cell.dataset.bar), beat: Number(cell.dataset.beat), string: note ? editor.rowForPitch(Number(note.dataset.pitch)) : editor.cursor.string }, ev.shiftKey);
-    if (ev.ctrlKey || ev.metaKey) editor.toggleSelectionRow(editor.rowPitch(), previous);
-  });
+export function hitDrumScore(el: HTMLElement, editor: Editor, x: number, y: number, nearest: boolean) {
+  const target = document.elementFromPoint(x,y) as HTMLElement | null;
+  const cell = target?.closest<HTMLElement>('.drum-beat');
+  if (cell && el.contains(cell) && cell.dataset.voice !== '0' && !nearest) return null;
+  let chosen = cell?.dataset.voice === '0' && el.contains(cell) ? cell : null;
+  if (!chosen) {
+    const frame = target?.closest<HTMLElement>('.drum-bar');
+    if (!nearest && (!frame || !el.contains(frame))) return null;
+    let distance = Infinity;
+    for (const beat of (frame && !nearest ? frame : el).querySelectorAll<HTMLElement>('.drum-beat[data-voice="0"]')) {
+      const r = beat.getBoundingClientRect();
+      const d = Math.hypot(Math.max(r.left-x,0,x-r.right),Math.max(r.top-y,0,y-r.bottom));
+      if (d < distance) { chosen = beat; distance = d; }
+    }
+  }
+  if (!chosen) return null;
+  const note = target?.closest<HTMLElement>('[data-pitch]');
+  return {track:editor.cursor.track,bar:Number(chosen.dataset.bar),beat:Number(chosen.dataset.beat),string:note && chosen.contains(note) ? editor.rowForPitch(Number(note.dataset.pitch)) : editor.cursor.string};
 }

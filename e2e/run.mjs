@@ -9,11 +9,15 @@ import { parseMidi } from 'midi-file';
 import { workflows } from './workflows.mjs';
 import { drumWorkflows } from './drums.mjs';
 import { guitarWorkflows } from './guitar.mjs';
+import { scoreInteractions } from './score-interaction.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const out = path.join(root, 'e2e/out');
 fs.mkdirSync(out, { recursive: true });
 const electronBin = path.join(root, 'node_modules/electron/dist/electron');
+// Share preferences within this suite (restart persistence is tested), but never use the
+// desktop user's saved input mode or leave test preferences in their application profile.
+const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'sixline-e2e-profile-'));
 
 /** Close the app, discarding unsaved edits (tests leave edited tabs open; the quit prompt is tested separately). */
 async function closeApp(app, win) {
@@ -33,7 +37,7 @@ async function step(name, fn) {
 }
 
 async function launch(file) {
-  const app = await electron.launch({ executablePath: electronBin, args: [root, file], cwd: root });
+  const app = await electron.launch({ executablePath: electronBin, args: [root, file], cwd: root, env: { ...process.env, XDG_CONFIG_HOME: profile } });
   const win = await app.firstWindow();
   const errors = [];
   win.on('pageerror', (e) => errors.push(String(e)));
@@ -825,5 +829,7 @@ if (fs.existsSync(big)) {
 await workflows({launch,closeApp,step,waitIdle,root,out,tabPoint});
 await drumWorkflows({launch,closeApp,step,waitIdle,out,root});
 await guitarWorkflows({launch,closeApp,step,waitIdle,out,root});
+await scoreInteractions({launch,closeApp,step,waitIdle,out,root,tabPoint});
 console.log(failures ? `\n${failures} FAILED` : '\nall e2e checks passed');
+fs.rmSync(profile, { recursive: true, force: true });
 process.exit(failures ? 1 : 0);

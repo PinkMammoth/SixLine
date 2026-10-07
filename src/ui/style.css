@@ -46,7 +46,8 @@ button, select, input { font: inherit; }
 .trk .ms.on.s { background: #fc3; }
 
 #score { flex: 1; overflow: auto; position: relative; background: #fff; }
-#sheet { position: relative; }
+#sheet { position: relative; touch-action: none; }
+#sheet.selecting { cursor: crosshair; }
 #caret { position: absolute; pointer-events: none; border: 2px solid #e2401c; background: rgba(226,64,28,.12); display: none; z-index: 5; }
 #caret.beatonly { border-color: #3a6ad4; background: rgba(58,106,212,.1); }
 .at-cursor-bar { background: rgba(255, 242, 0, 0.18); }

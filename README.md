@@ -12,7 +12,7 @@ npx electron . path/to/song.gp5   # open a file directly (after a build)
 
 ## Windows build
 
-The [v0.3.0 release report](docs/release-0.3.0.md) records the latest installer/portable build, checksums and installed-Windows verification.
+The [v0.3.1 release report](docs/release-0.3.1.md) records the latest installer/portable build and workflow checks. The [v0.3.0 report](docs/release-0.3.0.md) records the previous installed-Windows verification.
 
 ```sh
 npm run dist      # build the frontend + package Windows x64
@@ -70,7 +70,7 @@ npm run test:e2e  # builds, then drives the real Electron app with Playwright
 | + / - | shorter / longer duration |
 | . | dotted |
 | T (tab tracks), Shift+T (any track) | triplet |
-| Space | play / pause |
+| Space | play from chosen caret/selection start; pause / resume |
 | Ctrl+Space | play from caret or selection start |
 | Ctrl+L | loop the selected musical range |
 | Ctrl+Z, Ctrl+Y / Ctrl+Shift+Z | undo, redo |
@@ -143,7 +143,7 @@ The current pitch or kit piece is shown in the status bar. Pick a GM instrument 
 
 Each open song is a tab; opening a file adds a tab (an untouched Untitled tab is replaced, and a file that is already open is just focused). Closing or quitting with unsaved changes asks first.
 
-Clicking in the score moves the edit caret independently of playback. Shift-click extends a beat range. Ctrl-click selects string/pitch rows; additional Ctrl-clicks toggle rows inside the range. The Edit menu also selects beats, chords, notes and measures. Click the time signature in the toolbar to change it from the current bar on. Add or remove tracks from the Track menu.
+Clicking a bar or note chooses the next Play/Space start without seeking during playback. Click and drag to select complete bars, including when dragging backwards or across score rows; the score scrolls automatically at its edges. Shift-click or Shift-drag extends a beat range (or the existing measure selection). Escape clears the selection. Ctrl-click selects string/pitch rows; additional Ctrl-clicks toggle rows inside the range. The Edit menu also selects beats, chords, notes and measures. Click the time signature in the toolbar to change it from the current bar on. Add or remove tracks from the Track menu.
 
 ## Composition and practice (v0.2)
 
@@ -152,6 +152,8 @@ Copy and paste preserve the model's notes, velocities, rests, durations, tuplets
 Measure duplication inserts shared bars after the selected range, copies the active track and leaves empty measures on the other tracks. With no selection it copies the current measure. Beat duplication inserts time into the primary voice and reflows the following beats. Each operation is one undo step, including its caret and selection state.
 
 Paste and duplication reject placements that would split an existing note or pasted beat across a bar line. Grace notes and multiple voices require whole-measure operations; pasting multiple voices requires a measure boundary. Whole measures with one ordinary voice can paste from a mid-bar caret when the rhythms fit. Measure-boundary paste requires matching meters. Empty destinations get exact rest padding, including triplet rests. Rejected operations leave the document and undo history untouched.
+
+The transport buttons return to bar 1 or move back/forward exactly one playback bar, including meter changes and repeat occurrences. They seek while retaining playing/paused state. Seeking outside an active loop disables looping but retains its saved range. Play/Space starts from the caret or selection start after stopping or choosing a new score position; pausing and resuming continues from the paused time. Seeking with the progress slider or transport buttons chooses that playback position instead. Ctrl+Space / Play here explicitly starts from the caret/selection.
 
 The compact practice row provides speed (25–200%, including 50/60/70/80/90/100/110/120%), Loop Selection, saved-loop on/off, A/B points, metronome and off/one/two-bar count-in. Speed changes use the synthesizer's tempo multiplier and preserve pitch and musical position. A is inclusive and B is exclusive; set both at the caret and press A-B. Clear Loop removes both markers and the saved range. Loop Selection snapshots the range, so later caret or selection changes do not change it. Ranges that cross a repeat into unselected bars are rejected rather than looping extra music.
 
