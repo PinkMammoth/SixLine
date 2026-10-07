@@ -78,6 +78,40 @@ npm run test:e2e  # builds, then drives the real Electron app with Playwright
 | Ctrl+E | export Standard MIDI File (same generator as playback) |
 | F6 (or double-click a track) | track properties (name, MIDI program, tuning presets, capo, volume, pan) |
 
+### Guitar and bass composition
+
+The compact **Guitar** menu works on guitar and bass tracks. A technique command addresses the current note, or every selected note; Ctrl-click can restrict a passage to chosen strings. Beat selections address the primary voice, while measure selections include retained imported voices. Changes are one undo action and survive native save/load, copy/paste and duplication.
+
+| Key | Action |
+| --- | --- |
+| H | toggle hammer-on / pull-off to the next note on the same string |
+| B | edit bend amount and hold/release, or remove the bend |
+| S | edit shift/legato slide, slide in/out, or remove the slide |
+| V / Shift+V | toggle normal vibrato / apply wide vibrato |
+| P / L | toggle palm mute / let ring on the note or selected passage |
+| N | edit natural, artificial or pinch harmonic |
+| Q | toggle Chord Entry (also available beside the duration controls) |
+| Tab / Enter in Chord Entry | next string; Shift reverses direction |
+| X in Chord Entry | mute/skip the string and advance |
+| Ctrl+Shift+K | clear the whole chord at the caret |
+| Shift+↑/↓ | raise/lower all chord frets or selected notes by one fret |
+| Ctrl+Shift+↑/↓ | raise/lower by twelve frets |
+| Alt+↑/↓ | move chord/selected notes to the neighbouring string, preserving fretted pitch |
+
+In **Chord Entry**, the beat stays fixed. For a C chord, type `0 Tab 1 Tab 0 Tab 2 Tab 3 Tab X`, then Right to start the next beat on the top string. Multi-digit frets use the existing one-second entry window; Tab/Enter finishes a string. A chord entered this way is one undo action. Outside this mode, existing fret entry and navigation stay the same. Duration controls still apply normally; duplicate string notes are prevented.
+
+Bends support quarter, half, whole and 1½ steps, including bend-and-release. Existing GP curves are preserved unless an amount is explicitly chosen. Hammer-on/pull-off direction follows the fret relationship. New linked slides and hammer-ons require different, struck frets in consecutive beats on the same string; fill a measure before linking across its bar line. Invalid commands report why and leave the music unchanged. Copying a linked origin requires including its target. Deleting/replacing a target detaches the old relationship rather than attaching it to unrelated music; undo restores both ends.
+
+Palm mute and let ring follow alphaTab's per-note flags and derived spans. The menu also provides explicit apply/remove commands for passages. Natural harmonics use the tab's touch fret (for example 5, 7, 12, 19 or 24); artificial/pinch harmonics use a relative touch node, defaulting to twelve. Other imported harmonic types, slide variants and custom bend curves remain intact. When a multi-digit fret's first digit would temporarily invalidate a harmonic or transition, it is buffered without editing the song; Escape/Backspace cancels it and incomplete input expires after one second.
+
+Fret/string operations reject negative frets, frets above 30, duplicate strings and broken ties or linked articulations. Natural harmonic touch-fret changes require valid touch nodes. Moving harmonics between strings is rejected because preserving their sounding pitch needs a different fingering operation.
+
+Native `.tabproj` files retain technique notation exactly, including imported harmonic variants and bend points. GP3/4/5 import retains these effects through the canonical model and alphaTab bridge. MIDI export continues to use alphaTab's playback generator: supported effects become ordinary sounding note, timing and pitch-bend events. Guitar technique notation is **not retained through a MIDI round-trip**; no proprietary technique metadata is added.
+
+The Electron suite exercises an articulated riff through save/reopen/playback, vertical chord progression entry with multi-digit frets, duplicate/edit/undo/redo/MIDI export, bass chord transformations, and editing private articulated GP5 fixtures without modifying them.
+
+The [guitar/bass implementation report](docs/guitar-composition.md) records model semantics, the workflow audit, verification and remaining limits.
+
 ### Drum tracks
 
 A grid of the current bar appears under the score: rows are kit pieces, columns are beats. Click a cell to toggle it. The data is ordinary beats with General MIDI percussion notes.

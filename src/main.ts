@@ -1,7 +1,7 @@
 import './ui/style.css';
 import * as at from '@coderline/alphatab';
 import { Editor } from './editor/editor';
-import { createSong, isStringed, type Duration, type Song } from './model/song';
+import { createSong, isStringed, HarmonicType, type Duration, type Song } from './model/song';
 import { loadGpBytes, songToScore } from './io/alphatab';
 import { parseProject, serializeProject } from './io/project';
 import { exportMidi } from './io/midiExport';
@@ -10,7 +10,7 @@ import { importDialog, reportDialog } from './ui/importDialog';
 import { initialFile, onOpenFile, openFile, saveFile, type OpenedFile } from './platform/host';
 import { buildMenus, type MenuDef } from './ui/menu';
 import { locateCaret } from './ui/caret';
-import { newSongDialog, pitchName, timeSignatureDialog, trackDialog, unsavedDialog, measureDialog, markerDialog } from './ui/dialogs';
+import { newSongDialog, pitchName, timeSignatureDialog, trackDialog, unsavedDialog, measureDialog, markerDialog, bendDialog, slideDialog, harmonicDialog } from './ui/dialogs';
 import { selectionRange } from './editor/selection';
 import type { Passage } from './editor/clipboard';
 import { PracticeState, CountIn, tempoAtBar, clampLoopTick } from './playback/practice';
@@ -67,6 +67,7 @@ function preference(key: string, fallback: string) {
 let drumInput: DrumMode = preference('sixline.drumInput', 'letters') === 'numbers' ? 'numbers' : 'letters';
 let drumView: DrumView = preference('sixline.drumView', 'notation') === 'numbers' ? 'numbers' : 'notation';
 let drumEntryTimer = 0;
+let fretEntryTimer = 0;
 const numberScoreVisible = () => editor.track.type === 'drums' && drumView === 'numbers';
 
 // ------------------------------------------------------------------ alphaTab
@@ -677,6 +678,7 @@ window.addEventListener('keydown', (e) => {
     else if (lk === 'a') editor.selectMeasures(0, editor.song.masterBars.length - 1);
     else if (lk === 'g') goToMeasure();
     else if (lk === 'l') loopSelection();
+    else if (lk === 'k' && e.shiftKey && isStringed(editor.track)) editor.clearBeat();
     else if (k === ' ') startPlayback(true);
     else if (k === 'Home') editor.setCursor({ bar: 0, beat: 0 });
     else if (k === 'End') editor.setCursor({ bar: editor.song.masterBars.length - 1, beat: editor.track.measures.at(-1)!.voices[0].length - 1 });
@@ -689,23 +691,33 @@ window.addEventListener('keydown', (e) => {
     else if (k === 'ArrowLeft') editor.moveBar(-1);
     else if (k === 'Delete' || k === 'Backspace') editor.deleteBeat();
     else if (k === 'Insert') editor.insertBars(editor.cursor.bar, 1);
-    else if (k === 'ArrowUp' && e.shiftKey) editor.transposeNote(12);
-    else if (k === 'ArrowDown' && e.shiftKey) editor.transposeNote(-12);
+    else if (k === 'ArrowUp' && e.shiftKey) { if (isStringed(editor.track)) command(() => editor.transformFrets(12)); else editor.transposeNote(12); }
+    else if (k === 'ArrowDown' && e.shiftKey) { if (isStringed(editor.track)) command(() => editor.transformFrets(-12)); else editor.transposeNote(-12); }
     else if (k === 'ArrowUp') editor.moveString(-12);
     else if (k === 'ArrowDown') editor.moveString(12);
     else handled = false;
   } else if (e.altKey && DUR_KEYS[k]) {
     editor.setDuration(DUR_KEYS[k]);
+  } else if (e.altKey && isStringed(editor.track) && (k === 'ArrowUp' || k === 'ArrowDown')) {
+    command(() => editor.transformFrets(k === 'ArrowUp' ? -1 : 1, true));
   } else if (k === ' ') playPause();
+  else if (isStringed(editor.track) && !e.altKey && /^[hbsvplnq]$/i.test(k)) {
+    const key = k.toLowerCase();
+    if (key === 'b') editBend(); else if (key === 's') editSlide(); else if (key === 'n') editHarmonic();
+    else if (key === 'q') command(() => editor.toggleChordEntry());
+    else command(() => editor.setTechnique(({h:'hammer',v:'vibrato',p:'palmMute',l:'letRing'} as const)[key as 'h'|'v'|'p'|'l'], key === 'v' && e.shiftKey ? 'wide' : undefined));
+  }
+  else if (isStringed(editor.track) && editor.chordEntry && k.toLowerCase() === 'x') command(() => editor.muteChordString());
+  else if (isStringed(editor.track) && editor.chordEntry && (k === 'Tab' || k === 'Enter')) editor.advanceChordString(e.shiftKey ? -1 : 1);
   else if (editor.track.type === 'drums' && drumInput === 'letters' && k.length === 1 && DRUM_BY_SHORTCUT.has(k.toLowerCase()) && !e.altKey) editor.togglePitch(DRUM_BY_SHORTCUT.get(k.toLowerCase())!.key);
   else if (editor.track.type === 'keys' && /^[a-gA-G]$/.test(k) && !e.altKey) editor.typeNoteName(k);
   else if (k === 'Enter') editor.toggleAtCursor();
-  else if (k === 'ArrowUp' && e.shiftKey) editor.transposeNote(1);
-  else if (k === 'ArrowDown' && e.shiftKey) editor.transposeNote(-1);
+  else if (k === 'ArrowUp' && e.shiftKey) { if (isStringed(editor.track)) command(() => editor.transformFrets(1)); else editor.transposeNote(1); }
+  else if (k === 'ArrowDown' && e.shiftKey) { if (isStringed(editor.track)) command(() => editor.transformFrets(-1)); else editor.transposeNote(-1); }
   else if (k === 'ArrowRight' && e.shiftKey) editor.extendSelection(1);
   else if (k === 'ArrowLeft' && e.shiftKey) editor.extendSelection(-1);
-  else if (k === 'ArrowRight') editor.moveRight();
-  else if (k === 'ArrowLeft') editor.moveLeft();
+  else if (k === 'ArrowRight') { editor.moveRight(); if (isStringed(editor.track) && editor.chordEntry) editor.setCursor({string:0}); }
+  else if (k === 'ArrowLeft') { editor.moveLeft(); if (isStringed(editor.track) && editor.chordEntry) editor.setCursor({string:0}); }
   else if (k === 'ArrowUp') editor.moveString(-1);
   else if (k === 'ArrowDown') editor.moveString(1);
   else if (k === 'Home') editor.setCursor({ beat: 0 });
@@ -721,8 +733,16 @@ window.addEventListener('keydown', (e) => {
         drumEntryTimer = window.setTimeout(() => { ed.clearDrumDigits(); ed.emitCursor(); }, 2000);
       }
     }
-    else editor.typeDigit(Number(k));
+    else {
+      clearTimeout(fretEntryTimer);
+      command(() => editor.typeDigit(Number(k)));
+      if (editor.fretDigits) {
+        const ed = editor;
+        fretEntryTimer = window.setTimeout(() => { if (ed.fretDigits) ed.cancelFretEntry(); }, 1000);
+      }
+    }
   }
+  else if ((k === 'Delete' || k === 'Backspace') && editor.fretDigits) editor.cancelFretEntry();
   else if ((k === 'Delete' || k === 'Backspace') && editor.drumDigits) { editor.clearDrumDigits(); updateStatus(); }
   else if (k === 'Delete' || k === 'Backspace') editor.deleteNote();
   else if (k === 'Insert') editor.insertBeat();
@@ -730,13 +750,32 @@ window.addEventListener('keydown', (e) => {
   else if (k === '-' || k === '_') editor.stepDuration(-1);
   else if (k === '.') editor.toggleDot();
   else if (k === 'T' || (k === 't' && isStringed(editor.track))) editor.toggleTriplet();
-  else if (k === 'Escape') { editor.clearDrumDigits(); editor.clearSelection(); closeMenus(); }
+  else if (k === 'Escape') { editor.clearDrumDigits(); editor.cancelFretEntry(); editor.clearSelection(); closeMenus(); }
   else if (k === 'F6') editTrack();
   else handled = false;
   if (handled) e.preventDefault();
 });
 
 // ------------------------------------------------------------------ menus / toolbar / panels
+
+async function editBend() {
+  try { const r = await bendDialog(editor.techniqueNotes()[0].note.fx); if (r) command(() => editor.setBend(r.amount, r.release)); }
+  catch (e) { setMessage((e as Error).message); }
+}
+async function editSlide() {
+  try { const r = await slideDialog(editor.techniqueNotes()[0].note.fx); if (r) command(() => editor.setSlide(r.out, r.into)); }
+  catch (e) { setMessage((e as Error).message); }
+}
+async function editHarmonic() {
+  try {
+    const current = editor.techniqueNotes()[0].note.fx?.harmonic;
+    const r = await harmonicDialog(editor.techniqueNotes()[0].note.fx);
+    if (r && (!current || editor.selection || r.type !== current.type || r.value !== current.value)) command(() => editor.setHarmonic(r.type as HarmonicType | 0, r.value));
+  }
+  catch (e) { setMessage((e as Error).message); }
+}
+const guitarCommand = (run: () => void) => () => command(run);
+const stringed = () => isStringed(editor.track);
 
 const menus: MenuDef[] = [
   {
@@ -775,6 +814,33 @@ const menus: MenuDef[] = [
       { label: 'Insert bar', key: 'Ctrl+Ins', run: () => editor.insertBars(editor.cursor.bar, 1) },
       { label: 'Append bar', run: () => editor.insertBars(editor.song.masterBars.length, 1) },
       { label: 'Delete bar', run: () => editor.deleteBar() },
+    ],
+  },
+  {
+    title: 'Guitar',
+    items: [
+      { label:'Hammer-on / Pull-off', key:'H', enabled:stringed, run:guitarCommand(() => editor.setTechnique('hammer')) },
+      { label:'Bend…', key:'B', enabled:stringed, run:editBend },
+      { label:'Slide…', key:'S', enabled:stringed, run:editSlide },
+      { label:'Vibrato', key:'V', enabled:stringed, run:guitarCommand(() => editor.setTechnique('vibrato')) },
+      { label:'Wide vibrato', key:'Shift+V', enabled:stringed, run:guitarCommand(() => editor.setTechnique('vibrato', 'wide')) },
+      { label:'Palm mute', key:'P', enabled:stringed, run:guitarCommand(() => editor.setTechnique('palmMute')) },
+      { label:'Let ring', key:'L', enabled:stringed, run:guitarCommand(() => editor.setTechnique('letRing')) },
+      { label:'Harmonic…', key:'N', enabled:stringed, run:editHarmonic },
+      null,
+      { label:'Apply palm mute', enabled:stringed, run:guitarCommand(() => editor.setTechnique('palmMute', true)) },
+      { label:'Remove palm mute', enabled:stringed, run:guitarCommand(() => editor.setTechnique('palmMute', false)) },
+      { label:'Apply let ring', enabled:stringed, run:guitarCommand(() => editor.setTechnique('letRing', true)) },
+      { label:'Remove let ring', enabled:stringed, run:guitarCommand(() => editor.setTechnique('letRing', false)) },
+      null,
+      { label:'Chord entry on / off', key:'Q', enabled:stringed, run:guitarCommand(() => editor.toggleChordEntry()) },
+      { label:'Clear chord at caret', key:'Ctrl+Shift+K', enabled:stringed, run:guitarCommand(() => editor.clearBeat()) },
+      { label:'Move chord / notes up a string', key:'Alt+Up', enabled:stringed, run:guitarCommand(() => editor.transformFrets(-1, true)) },
+      { label:'Move chord / notes down a string', key:'Alt+Down', enabled:stringed, run:guitarCommand(() => editor.transformFrets(1, true)) },
+      { label:'Transpose frets +1', key:'Shift+Up', enabled:stringed, run:guitarCommand(() => editor.transformFrets(1)) },
+      { label:'Transpose frets −1', key:'Shift+Down', enabled:stringed, run:guitarCommand(() => editor.transformFrets(-1)) },
+      { label:'Transpose frets +12', key:'Ctrl+Shift+Up', enabled:stringed, run:guitarCommand(() => editor.transformFrets(12)) },
+      { label:'Transpose frets −12', key:'Ctrl+Shift+Down', enabled:stringed, run:guitarCommand(() => editor.transformFrets(-12)) },
     ],
   },
   {
@@ -845,10 +911,12 @@ function buildToolbar() {
     <button id="b-redo" title="Redo (Ctrl+Y)">↷</button>
     <span class="sep"></span>
     <span id="trackname" class="lbl"></span>
+    <span id="guitar-controls" hidden><button id="b-chord" title="Chord entry (Q): Tab/Enter next string, X mute/skip, Right next beat">Chord (Q)</button><span id="guitar-fx" class="lbl"></span></span>
     <span id="drum-controls" hidden>
       <label>Drum input <select id="drum-input" aria-label="Drum input"><option value="letters">Letters (H, S, K…)</option><option value="numbers">MIDI numbers</option></select></label>
       <label>View <select id="drum-view" aria-label="Drum score view"><option value="notation">Notation</option><option value="numbers">MIDI numbers</option></select></label>
     </span>`;
+  $('b-chord').onclick = () => command(() => editor.toggleChordEntry());
   $<HTMLSelectElement>('drum-input').onchange = () => { setDrumInput($<HTMLSelectElement>('drum-input').value as DrumMode); $('drum-input').blur(); };
   $<HTMLSelectElement>('drum-view').onchange = () => { setDrumView($<HTMLSelectElement>('drum-view').value as DrumView); $('drum-view').blur(); };
   const practice = document.createElement('div');
@@ -917,6 +985,13 @@ function updateToolbar() {
   const mb = editor.song.masterBars[editor.cursor.bar];
   $('tsig').textContent = `${mb.num}/${mb.den}`;
   $('trackname').textContent = editor.track.name;
+  $('guitar-controls').hidden = !isStringed(editor.track);
+  $('b-chord').classList.toggle('on', editor.chordEntry);
+  $('b-chord').textContent = editor.chordEntry ? 'Chord on (Q)' : 'Chord (Q)';
+  const fx = isStringed(editor.track) ? editor.noteAtCursor()?.fx : undefined;
+  const labels = fx ? [fx.hammer && 'H/P', fx.bend && 'Bend', fx.slide && 'Slide', fx.slideIn && 'Slide in', fx.vibrato && (fx.vibrato === 'wide' ? 'Wide vib.' : 'Vibrato'), fx.palmMute && 'P.M.', fx.letRing && 'Let ring', fx.harmonic && 'Harmonic'].filter(Boolean) : [];
+  $('guitar-fx').textContent = labels.join(' · ');
+  $('guitar-fx').title = labels.join(' · ') + (fx?.bend ? ` · peak bend ${Math.max(...fx.bend.map(p => p.value)) / 2} semitones` : '') + (fx?.harmonic ? ` · touch node ${fx.harmonic.value}` : '');
   $('drum-controls').hidden = editor.track.type !== 'drums';
   $<HTMLSelectElement>('drum-input').value = drumInput;
   $<HTMLSelectElement>('drum-view').value = drumView;
@@ -986,7 +1061,7 @@ function updateStatus() {
   const beat = editor.beat;
   const note = editor.noteAtCursor();
   const row = isStringed(tr)
-    ? `String ${c.string + 1}${note ? ` fret ${note.fret}` : ''}`
+    ? `String ${c.string + 1}${note ? ` fret ${note.fret}` : ''}${editor.fretDigits ? ` · Entering ${editor.fretDigits}_ (finish fret or Escape)` : ''}`
     : tr.type === 'drums'
       ? `${editor.rowPitch()} ${drumName(editor.rowPitch())}${note ? ' ●' : ''}${editor.drumDigits ? ` · Entering ${editor.drumDigits}_` : ''}`
       : `Pitch ${pitchName(editor.rowPitch())}${note ? ' ●' : ''}`;

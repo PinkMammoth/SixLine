@@ -80,17 +80,25 @@ export interface NoteEffects {
   ghost?: boolean;
   palmMute?: boolean;
   letRing?: boolean;
+  /** Origin of a hammer-on/pull-off to the next note on this string in the same voice. */
   hammer?: boolean;
-  /** alphaTab SlideOutType: 1 shift, 2 legato, 3 out-down, 4 out-up, ... */
+  /** alphaTab SlideOutType: 1 shift, 2 legato, 3 out-up, 4 out-down, 5/6 pick slide. */
   slide?: number;
   /** alphaTab SlideInType: 1 from below, 2 from above. */
   slideIn?: number;
-  vibrato?: boolean;
+  /** true = normal/slight (compatible with existing projects). */
+  vibrato?: boolean | 'wide';
+  /** Harmonic node value is alphaTab's relative touch position, not a MIDI pitch. */
+  harmonic?: { type: HarmonicType; value: number };
   accent?: boolean;
   staccato?: boolean;
   /** Bend points: offset 0-60, value in quarter tones. */
   bend?: { offset: number; value: number }[];
 }
+
+/** GP/alphaTab harmonic types; all imported variants are retained. */
+export enum HarmonicType { Natural = 1, Artificial = 2, Pinch = 3, Tap = 4, Semi = 5, Feedback = 6 }
+export const MAX_FRET = 30;
 
 export const STANDARD_TUNINGS: Record<'guitar' | 'bass', number[]> = {
   guitar: [64, 59, 55, 50, 45, 40],

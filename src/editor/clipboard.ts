@@ -1,6 +1,7 @@
 import { type Beat, type Duration, type MasterBar, type Measure, type Note, type Song, type Track, isStringed, notePitch } from '../model/song';
 import { barTicks, beatTicks, ticksToDurations, voiceTicks } from '../model/rhythm';
 import { selectionRange, type Position, type Selection } from './selection';
+import { notePositions, relationships, repairRelationships } from './techniques';
 
 export interface Passage {
   type: Track['type'];
@@ -34,6 +35,11 @@ function sanitizeTies(track: Track) {
 export function copyPassage(song: Song, s: Selection): Passage {
   const { start, end } = selectionRange(song, s);
   const t = song.tracks[s.track];
+  const selected = new Set(notePositions(t).filter(p => p.bar >= start.bar && p.bar <= end.bar &&
+    (s.kind === 'measures' || p.voice === 0 && (p.bar !== start.bar || p.beat >= start.beat) && (p.bar !== end.bar || p.beat <= end.beat)) &&
+    (!s.rows || s.rows.includes(isStringed(t) ? p.note.string! : p.note.pitch!))).map(p => p.note));
+  if (relationships(t).some(r => !r.tie && selected.has(r.from.note) && !selected.has(r.to.note)))
+    throw new Error('Include both ends of a hammer-on or linked slide in the copied/duplicated passage.');
   const measures = clone(t.measures.slice(start.bar, end.bar + 1));
   if (s.kind === 'beats') {
     for (let i = 0; i < measures.length; i++) measures[i].voices = [measures[i].voices[0].slice(i === 0 ? start.beat : 0, i === measures.length - 1 ? end.beat + 1 : undefined)];
@@ -73,7 +79,9 @@ function rests(ticks: number): Beat[] {
   return out;
 }
 function padded(song: Song, track: number, bar: number): Beat[] {
-  const voice = clone(song.tracks[track].measures[bar].voices[0]);
+  // The caller already cloned the song. Keep surviving note identities so relationship repair
+  // can distinguish an existing target from newly pasted material.
+  const voice = song.tracks[track].measures[bar].voices[0].slice();
   if (voice.some(b => b.grace)) throw new Error('For grace notes, copy and paste whole measures.');
   const missing = barTicks(song.masterBars[bar]) - voiceTicks(voice);
   if (missing < 0) throw new Error('Resolve the overfull measure before pasting.');
@@ -89,6 +97,7 @@ export function pastePassage(source: Song, track: number, at: Position, p: Passa
   assertCompatible(source.tracks[track], p);
   const song = clone(source);
   const t = song.tracks[track];
+  const links = relationships(t);
   if (p.kind === 'measures' && !p.rows && at.beat === 0) {
     p.measures.forEach((m, i) => {
       const bar = at.bar + i;
@@ -98,7 +107,7 @@ export function pastePassage(source: Song, track: number, at: Position, p: Passa
       if (m.voices.some(v => voiceTicks(v.filter(b => !b.grace)) > barTicks(dest))) throw new Error('Cannot paste an overfull measure.');
       t.measures[bar] = clone(m);
     });
-    sanitizeTies(t); return song;
+    repairRelationships(t, links); sanitizeTies(t); return song;
   }
   if (p.kind === 'measures' && !p.rows && p.measures.some(m => m.voices.length > 1)) throw new Error('Paste measures with multiple voices at a measure boundary.');
   const material = clone(p.measures.flatMap((m, i) => p.kind === 'measures' && !p.rows
@@ -139,7 +148,7 @@ export function pastePassage(source: Song, track: number, at: Position, p: Passa
     } else { v.splice(first, last - first, beat); t.measures[bar].voices[0] = v; }
     offset += size;
   }
-  sanitizeTies(t); return song;
+  repairRelationships(t, links); sanitizeTies(t); return song;
 }
 
 /** Beat duplication inserts time and reflows the primary voice. Never split notes implicitly. */
@@ -147,8 +156,9 @@ export function insertPassage(source: Song, track: number, at: Position, p: Pass
   assertCompatible(source.tracks[track], p);
   const song = clone(source);
   const t = song.tracks[track];
+  const links = relationships(t);
   if (t.measures.slice(at.bar).some(m => m.voices.length > 1)) throw new Error('Duplicate whole measures when the passage has multiple voices.');
-  const prefix = clone(t.measures[at.bar].voices[0].slice(0, at.beat));
+  const prefix = t.measures[at.bar].voices[0].slice(0, at.beat);
   const suffix = t.measures.slice(at.bar).flatMap((_m, i) => padded(song, track, at.bar + i).slice(i === 0 ? at.beat : 0));
   const beats = [...prefix, ...clone(p.measures.flatMap(m => m.voices[0])), ...suffix];
   let bar = at.bar, used = 0, voice: Beat[] = [];
@@ -160,5 +170,5 @@ export function insertPassage(source: Song, track: number, at: Position, p: Pass
     if (used === barTicks(song.masterBars[bar])) { t.measures[bar].voices[0] = voice; bar++; used = 0; voice = []; }
   }
   if (voice.length) t.measures[bar].voices[0] = voice;
-  sanitizeTies(t); return song;
+  repairRelationships(t, links); sanitizeTies(t); return song;
 }

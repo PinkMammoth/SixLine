@@ -1,11 +1,12 @@
 // Editor state + command execution with snapshot-based undo/redo.
 // All document mutation goes through Editor.edit(); UI code never mutates the Song directly.
-import { createTrack, emptyMeasure, isStringed, type Beat, type Duration, type Measure, type Song, type Track, type TrackType } from '../model/song';
+import { createTrack, emptyMeasure, isStringed, notePitch, MAX_FRET, HarmonicType, type Beat, type Duration, type Measure, type Song, type Track, type TrackType } from '../model/song';
 import { barTicks, beatTicks, voiceTicks } from '../model/rhythm';
 import { DRUM_KIT, SNARE_ROW } from '../model/drums';
 import { convertTrack } from '../model/convert';
 import { copyPassage, pastePassage, insertPassage, tieOrigins, type Passage } from './clipboard';
 import { selectionRange, type Selection } from './selection';
+import { notePositions, nextOnString, requireTransition, relationships, repairRelationships, tidyFx, NATURAL_NODES, bendCurve, type NotePosition } from './techniques';
 
 export interface Cursor {
   track: number;
@@ -48,13 +49,19 @@ export class Editor {
   selection: Selection | null = null;
   /** Duration used for newly created beats. */
   duration: Duration = 4;
+  /** Editing preference, independent of song and playback. Tab/Enter commits a string in this mode. */
+  chordEntry = false;
+  private chordSession: { at: string; entry: Entry } | null = null;
   dirty = false;
   private undoStack: Entry[] = [];
   private redoStack: Entry[] = [];
   private listeners: ((c: Change) => void)[] = [];
   private cursorListeners: (() => void)[] = [];
   /** Last typed digit, for multi-digit fret entry. */
-  private pendingDigit: { at: string; value: number; time: number } | null = null;
+  private pendingDigit: { at: string; value: number; time: number; deferred?: boolean } | null = null;
+  /** Only exposed for a digit buffered to avoid temporarily breaking a harmonic/transition. */
+  get fretDigits() { return this.pendingDigit?.deferred ? String(this.pendingDigit.value) : ''; }
+  cancelFretEntry() { this.pendingDigit = null; this.emitCursor(); }
   private pendingDrumDigit: { at: string; value: number; time: number } | null = null;
   get drumDigits() { return this.pendingDrumDigit ? String(this.pendingDrumDigit.value) : ''; }
   clearDrumDigits() { this.pendingDrumDigit = null; }
@@ -72,6 +79,8 @@ export class Editor {
 
   load(song: Song) {
     this.clearDrumDigits();
+    this.pendingDigit = null;
+    this.chordSession = null;
     this.song = song;
     this.undoStack = [];
     this.redoStack = [];
@@ -133,13 +142,19 @@ export class Editor {
    */
   edit(label: string, scope: 'measure' | 'song', fn: (song: Song) => void, opts: { merge?: boolean; firstBar?: number; audio?: boolean } = {}) {
     this.clearDrumDigits();
-    const sc: Scope = scope === 'song' ? { kind: 'song' } : { kind: 'measure', track: this.cursor.track, bar: this.cursor.bar };
+    this.pendingDigit = null;
+    const links = this.song.tracks.map(relationships);
+    // A deletion can detach a transition in the previous bar; capture both ends in the same undo action.
+    const crossesBar = links[this.cursor.track].some(r => r.from.bar !== r.to.bar && (r.from.bar === this.cursor.bar || r.to.bar === this.cursor.bar));
+    const sc: Scope = scope === 'song' || crossesBar ? { kind: 'song' } : { kind: 'measure', track: this.cursor.track, bar: this.cursor.bar };
     const cursorBefore = { ...this.cursor };
     const selectionBefore = clone(this.selection);
     const before = this.snapshot(sc);
     fn(this.song);
+    let repaired: number | null = null;
+    this.song.tracks.forEach((t, i) => { const first = repairRelationships(t, links[i] ?? []); if (first !== null) repaired = Math.min(repaired ?? first, first); });
     this.normalize();
-    const firstBar = opts.firstBar ?? (sc.kind === 'measure' ? sc.bar : 0);
+    const firstBar = Math.min(opts.firstBar ?? (scope === 'song' ? 0 : this.cursor.bar), repaired ?? Infinity);
     const entry: Entry = { label, scope: sc, before, after: this.snapshot(sc), cursorBefore, cursorAfter: { ...this.cursor }, firstBar, selectionBefore, selectionAfter: clone(this.selection), audio: opts.audio };
     const last = this.undoStack[this.undoStack.length - 1];
     if (opts.merge && last && sameScope(last.scope, sc)) {
@@ -154,8 +169,9 @@ export class Editor {
   }
 
   undo() {
-    const partial = this.drumDigits;
+    const partial = this.drumDigits || this.fretDigits;
     this.clearDrumDigits();
+    this.pendingDigit = null;
     const e = this.undoStack.pop();
     if (!e) { if (partial) this.emitCursor(); return; }
     this.restore(e.scope, e.before);
@@ -166,8 +182,9 @@ export class Editor {
   }
 
   redo() {
-    const partial = this.drumDigits;
+    const partial = this.drumDigits || this.fretDigits;
     this.clearDrumDigits();
+    this.pendingDigit = null;
     const e = this.redoStack.pop();
     if (!e) { if (partial) this.emitCursor(); return; }
     this.restore(e.scope, e.after);
@@ -178,6 +195,7 @@ export class Editor {
   }
 
   private afterHistory(e: Entry) {
+    this.chordSession = null;
     this.clearDrumDigits();
     this.dirty = true;
     this.pendingDigit = null;
@@ -229,6 +247,7 @@ export class Editor {
   }
 
   setCursor(c: Partial<Cursor>, extend = false, kind: Selection['kind'] = 'beats') {
+    this.chordSession = null;
     this.clearDrumDigits();
     const from = this.track;
     const anchor = this.selection?.anchor ?? { bar: this.cursor.bar, beat: this.cursor.beat };
@@ -410,6 +429,116 @@ export class Editor {
 
   // ------------------------------------------------------------ note editing
 
+  toggleChordEntry() {
+    if (!isStringed(this.track)) throw new Error('Chord entry is available on guitar and bass tracks.');
+    this.chordEntry = !this.chordEntry;
+    this.pendingDigit = null; this.chordSession = null;
+    this.emitCursor();
+  }
+  advanceChordString(delta = 1) {
+    const session = this.chordSession;
+    this.setCursor({ string: this.cursor.string + delta });
+    this.chordSession = session;
+  }
+  private chordMerge() {
+    return this.chordEntry && this.chordSession?.at === `${this.cursor.track}:${this.cursor.bar}:${this.cursor.beat}` && this.chordSession.entry === this.undoStack.at(-1);
+  }
+  private rememberChord() {
+    if (this.chordEntry) this.chordSession = { at: `${this.cursor.track}:${this.cursor.bar}:${this.cursor.beat}`, entry: this.undoStack.at(-1)! };
+  }
+  muteChordString() {
+    if (this.noteAtCursor()) {
+      const merge = this.chordMerge();
+      this.edit('Chord entry', 'measure', () => { this.beat.notes = this.beat.notes.filter(n => n.string !== this.cursor.string); }, { merge });
+      this.rememberChord();
+    }
+    this.advanceChordString();
+  }
+
+  /** Notes addressed by a technique command. Whole-measure selections include retained secondary voices. */
+  techniqueNotes(chord = false): NotePosition[] {
+    if (!isStringed(this.track)) throw new Error('This command is available on guitar and bass tracks.');
+    const s = this.selection;
+    let notes: NotePosition[];
+    if (s && s.track === this.cursor.track) {
+      const { start, end } = selectionRange(this.song, s);
+      notes = notePositions(this.track).filter(p => p.bar >= start.bar && p.bar <= end.bar &&
+        (s.kind === 'measures' || p.voice === 0 && (p.bar !== start.bar || p.beat >= start.beat) && (p.bar !== end.bar || p.beat <= end.beat)) && (!s.rows || s.rows.includes(p.note.string!)));
+    } else notes = notePositions(this.track).filter(p => p.bar === this.cursor.bar && p.beat === this.cursor.beat && p.voice === 0 && (chord || p.note.string === this.cursor.string));
+    if (!notes.length) throw new Error('Select a fretted note first.');
+    return notes;
+  }
+  setTechnique(key: 'hammer' | 'palmMute' | 'letRing' | 'vibrato', value?: boolean | 'wide') {
+    const notes = this.techniqueNotes();
+    const applied = value ?? !notes.every(p => !!p.note.fx?.[key]);
+    if (key !== 'vibrato' && applied === 'wide') throw new Error('Wide applies only to vibrato.');
+    if (key === 'hammer' && applied) notes.forEach(p => requireTransition(this.track, p, this.song.masterBars));
+    this.edit(key === 'hammer' ? 'Hammer-on / pull-off' : key, 'song', () => {
+      for (const {note} of notes) {
+        if (applied) { const fx = note.fx ??= {}; if (key === 'vibrato') fx.vibrato = applied; else fx[key] = true; }
+        else if (note.fx) { delete note.fx[key]; tidyFx(note); }
+      }
+    }, { firstBar: Math.min(...notes.map(p => p.bar)) });
+  }
+  setBend(amount: number, release = false) {
+    const notes = this.techniqueNotes(), curve = amount === 0 ? null : bendCurve(amount, release);
+    this.edit('Bend', 'song', () => { for (const {note} of notes) {
+      if (curve) (note.fx ??= {}).bend = clone(curve);
+      else if (note.fx) { delete note.fx.bend; tidyFx(note); }
+    } }, { firstBar: Math.min(...notes.map(p => p.bar)) });
+  }
+  setSlide(out: number, into = 0) {
+    if (![0,1,2,3,4,5,6].includes(out) || ![0,1,2].includes(into)) throw new Error('Unsupported slide type.');
+    const notes = this.techniqueNotes();
+    if (out === 1 || out === 2) notes.forEach(p => { if (p.note.fx?.slide !== out) requireTransition(this.track, p, this.song.masterBars); });
+    this.edit('Slide', 'song', () => { for (const {note} of notes) {
+      const fx = note.fx ??= {}; if (out) fx.slide = out; else delete fx.slide;
+      if (into) fx.slideIn = into; else delete fx.slideIn; tidyFx(note);
+    } }, { firstBar: Math.min(...notes.map(p => p.bar)) });
+  }
+  setHarmonic(type: HarmonicType | 0, value = 12) {
+    const notes = this.techniqueNotes();
+    if (![0,1,2,3,4,5,6].includes(type)) throw new Error('Unsupported harmonic type.');
+    if (type === HarmonicType.Natural && notes.some(p => !NATURAL_NODES[p.note.fret!])) throw new Error('Natural harmonic needs a playable touch fret (for example 5, 7, 12, 19 or 24).');
+    if (type && type !== HarmonicType.Natural && (!Number.isFinite(value) || value <= 0 || value > 24)) throw new Error('Harmonic touch node must be above 0 and at most 24.');
+    this.edit('Harmonic', 'song', () => { for (const {note} of notes) {
+      if (type) (note.fx ??= {}).harmonic = { type, value: type === HarmonicType.Natural ? NATURAL_NODES[note.fret!] : value };
+      else if (note.fx) { delete note.fx.harmonic; tidyFx(note); }
+    } }, { firstBar: Math.min(...notes.map(p => p.bar)) });
+  }
+  /** Atomic chord/selection transforms. Restringing preserves sounding fretted pitches. */
+  transformFrets(delta: number, strings = false) {
+    const targets = this.techniqueNotes(true), song = clone(this.song), track = song.tracks[this.cursor.track];
+    const before = relationships(track);
+    const copied = targets.map(p => track.measures[p.bar].voices[p.voice][p.beat].notes.find(n => n.string === p.note.string)!);
+    for (const [i, p] of targets.entries()) {
+      const n = copied[i];
+      if (strings) {
+        if (n.fx?.harmonic) throw new Error('Remove the harmonic before moving its note to another string.');
+        const row = n.string! + delta;
+        if (row < 0 || row >= track.tuning.length) throw new Error('The chord would move beyond the available strings.');
+        n.fret = notePitch(this.track, p.note) - track.tuning[row] - track.capo;
+        n.string = row;
+      } else {
+        n.fret! += delta;
+        if (n.fx?.harmonic?.type === HarmonicType.Natural) {
+          if (!NATURAL_NODES[n.fret!]) throw new Error('The result is not a playable natural harmonic node.');
+          n.fx.harmonic.value = NATURAL_NODES[n.fret!];
+        }
+      }
+      if (!Number.isInteger(n.fret) || n.fret! < 0 || n.fret! > MAX_FRET) throw new Error(`All resulting frets must be between 0 and ${MAX_FRET}.`);
+    }
+    for (const m of track.measures) for (const v of m.voices) for (const b of v) {
+      if (new Set(b.notes.map(n => n.string)).size !== b.notes.length) throw new Error('Moving those notes would put two notes on the same string.');
+      b.notes.sort((a,b) => a.string! - b.string!);
+    }
+    for (const r of before) {
+      if (r.from.note.string !== r.to.note.string || (r.tie ? notePitch(track, r.from.note) !== notePitch(track, r.to.note) : nextOnString(track, r.from)?.note !== r.to.note || r.from.note.fret === r.to.note.fret && r.fromFret !== r.toFret))
+        throw new Error('This move would break a tie, hammer-on or slide. Select both ends of the transition.');
+    }
+    this.edit(strings ? 'Move chord to strings' : 'Transpose frets', 'song', () => { this.song = song; if (strings) { this.cursor.string += delta; if (this.selection?.rows) this.selection.rows = this.selection.rows.map(r => r + delta); } }, { firstBar: Math.min(...targets.map(p => p.bar)) });
+  }
+
   /** Two-digit GM entry is atomic: the first digit never changes the song or undo history. */
   typeDrumDigit(d: number, now = performance.now()) {
     if (this.track.type !== 'drums' || !Number.isInteger(d) || d < 0 || d > 9) return;
@@ -430,28 +559,54 @@ export class Editor {
 
   /** Type a digit: enters a fret; a second digit within the window forms a multi-digit fret (e.g. 1,2 -> 12). */
   typeDigit(d: number, now = performance.now()) {
-    if (!isStringed(this.track)) return;
+    if (!isStringed(this.track) || !Number.isInteger(d) || d < 0 || d > 9) return;
     const at = posKey(this.cursor);
     const p = this.pendingDigit;
+    if (this.chordEntry && p && p.at === at && now - p.time < 1000 && p.value * 10 + d > MAX_FRET) {
+      this.pendingDigit = null; this.emitCursor();
+      throw new Error(`Fret ${p.value * 10 + d} is above the maximum ${MAX_FRET}.`);
+    }
     let fret = d;
     let merge = false;
     if (p && p.at === at && now - p.time < 1000 && p.value * 10 + d <= 30) {
       fret = p.value * 10 + d;
-      merge = true;
+      merge = !p.deferred;
+    }
+    // Keep existing techniques intact while entering a multi-digit fret whose prefix is not playable.
+    if (fret === d && [1,2,3].includes(d) && this.fretConflict(d)) {
+      this.pendingDigit = {at,value:d,time:now,deferred:true};
+      this.emitCursor(); return;
+    }
+    if (p?.deferred && p.at === at && now - p.time < 1000 && p.value * 10 + d > MAX_FRET) {
+      this.pendingDigit = null; this.emitCursor(); throw new Error(`Fret must be between 0 and ${MAX_FRET}.`);
     }
     this.setFret(fret, merge);
-    this.pendingDigit = merge ? null : { at, value: d, time: now };
+    this.pendingDigit = merge || p?.deferred && fret !== d ? null : { at, value: d, time: now };
+  }
+
+  private fretConflict(fret: number) {
+    const note = this.noteAtCursor();
+    if (!note || note.fret === fret) return '';
+    if (note.fx?.harmonic?.type === HarmonicType.Natural && !NATURAL_NODES[fret]) return 'Remove the natural harmonic before entering a fret without a harmonic touch node.';
+    if (relationships(this.track).some(r => !r.tie && (r.from.note === note && r.to.note.fret === fret || r.to.note === note && r.from.note.fret === fret)))
+      return 'That fret would make a hammer-on or slide target equal to its origin. Change or remove the transition first.';
+    return '';
   }
 
   setFret(fret: number, merge = false) {
+    if (!isStringed(this.track)) throw new Error('Fret entry requires a guitar or bass track.');
+    if (!Number.isInteger(fret) || fret < 0 || fret > MAX_FRET) throw new Error(`Fret must be between 0 and ${MAX_FRET}.`);
     const s = this.cursor.string;
+    const conflict = this.fretConflict(fret);
+    if (conflict) throw new Error(conflict);
     this.edit(
-      `Fret ${fret}`,
+      this.chordEntry ? 'Chord entry' : `Fret ${fret}`,
       'measure',
       () => {
         const b = this.beat;
         const existing = b.notes.find((n) => n.string === s);
         if (existing) {
+          if (existing.fret !== fret && existing.fx?.harmonic?.type === HarmonicType.Natural) existing.fx.harmonic.value = NATURAL_NODES[fret];
           existing.fret = fret;
           delete existing.tie;
         } else {
@@ -459,8 +614,9 @@ export class Editor {
           b.notes.sort((x, y) => x.string! - y.string!);
         }
       },
-      { merge },
+      { merge: merge || this.chordMerge() },
     );
+    this.rememberChord();
   }
 
   /** Toggle a drum/keys pitch at the cursor beat and move the row cursor to it. */

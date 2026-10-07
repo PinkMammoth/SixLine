@@ -8,6 +8,7 @@ import os from 'node:os';
 import { parseMidi } from 'midi-file';
 import { workflows } from './workflows.mjs';
 import { drumWorkflows } from './drums.mjs';
+import { guitarWorkflows } from './guitar.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const out = path.join(root, 'e2e/out');
@@ -823,5 +824,6 @@ if (fs.existsSync(big)) {
 
 await workflows({launch,closeApp,step,waitIdle,root,out,tabPoint});
 await drumWorkflows({launch,closeApp,step,waitIdle,out,root});
+await guitarWorkflows({launch,closeApp,step,waitIdle,out,root});
 console.log(failures ? `\n${failures} FAILED` : '\nall e2e checks passed');
 process.exit(failures ? 1 : 0);

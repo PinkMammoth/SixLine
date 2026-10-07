@@ -1,12 +1,12 @@
 // Small modal forms built on <dialog>. Enter = OK, Esc = cancel.
-import { type Track, type TrackType } from '../model/song';
+import { type Track, type TrackType, type NoteEffects } from '../model/song';
 import { GM_PROGRAMS } from '../model/gm';
 import { TUNING_PRESETS } from '../model/tunings';
 export { TUNING_PRESETS };
 
 type Field =
   | { name: string; label: string; type: 'text'; value: string }
-  | { name: string; label: string; type: 'number'; value: number; min?: number; max?: number }
+  | { name: string; label: string; type: 'number'; value: number; min?: number; max?: number; step?: number | 'any' }
   | { name: string; label: string; type: 'select'; value: string; options: [string, string][] };
 
 function form(title: string, fields: Field[], onInput?: (f: HTMLFormElement) => void): Promise<Record<string, string> | null> {
@@ -17,7 +17,7 @@ function form(title: string, fields: Field[], onInput?: (f: HTMLFormElement) => 
         const id = 'f-' + f.name;
         if (f.type === 'select')
           return `<label>${f.label}<select id="${id}" name="${f.name}">${f.options.map(([v, l]) => `<option value="${v}"${v === f.value ? ' selected' : ''}>${l}</option>`).join('')}</select></label>`;
-        const extra = f.type === 'number' ? ` min="${f.min ?? ''}" max="${f.max ?? ''}" style="width:70px"` : ' style="width:200px"';
+        const extra = f.type === 'number' ? ` min="${f.min ?? ''}" max="${f.max ?? ''}" step="${f.step ?? 1}" style="width:70px"` : ' style="width:200px"';
         return `<label>${f.label}<input id="${id}" name="${f.name}" type="${f.type}" value="${String(f.value).replace(/"/g, '&quot;')}"${extra}></label>`;
       })
       .join('');
@@ -36,6 +36,36 @@ function form(title: string, fields: Field[], onInput?: (f: HTMLFormElement) => 
     dlg.showModal();
     (f.querySelector('input,select') as HTMLElement | null)?.focus();
   });
+}
+
+export async function bendDialog(fx?: NoteEffects) {
+  const existing = fx?.bend;
+  const r = await form('Bend', [
+    { name: 'amount', label: 'Amount', type: 'select', value: existing ? 'keep' : '4', options: [
+      ...(existing ? [['keep', 'Keep current curve'] as [string,string]] : []),
+      ['0','Remove bend'], ['1','Quarter step'], ['2','Half step'], ['4','Whole step'], ['6','1½ steps'],
+    ] },
+    { name: 'shape', label: 'Shape', type: 'select', value: existing?.at(-1)?.value === 0 ? 'release' : 'bend', options: [['bend','Bend and hold'],['release','Bend and release']] },
+  ]);
+  return r && r.amount !== 'keep' ? { amount: Number(r.amount), release: r.shape === 'release' } : null;
+}
+export async function slideDialog(fx?: NoteEffects) {
+  const options: [string,string][] = [['0','None'],['1','Shift to next note'],['2','Legato to next note'],['3','Slide out up'],['4','Slide out down']];
+  if (fx?.slide === 5 || fx?.slide === 6) options.push([String(fx.slide), 'Keep imported pick slide']);
+  const r = await form('Slide', [
+    { name: 'slide', label: 'Slide out', type: 'select', value: String(fx?.slide ?? 0), options },
+    { name: 'slideIn', label: 'Slide in', type: 'select', value: String(fx?.slideIn ?? 0), options: [['0','None'],['1','From below'],['2','From above']] },
+  ]);
+  return r ? { out: Number(r.slide), into: Number(r.slideIn) } : null;
+}
+export async function harmonicDialog(fx?: NoteEffects) {
+  const options: [string,string][] = [['0','None'],['1','Natural (touch fret on tab)'],['2','Artificial'],['3','Pinch']];
+  if (fx?.harmonic && fx.harmonic.type > 3) options.push([String(fx.harmonic.type), 'Keep imported harmonic type']);
+  const r = await form('Harmonic', [
+    { name: 'harmonic', label: 'Type', type: 'select', value: String(fx?.harmonic?.type ?? 1), options },
+    { name: 'node', label: 'Touch node above fretted note (non-natural)', type: 'number', value: fx?.harmonic?.value ?? 12, min: 0.1, max: 24, step:'any' },
+  ]);
+  return r ? { type: Number(r.harmonic), value: Number(r.node) } : null;
 }
 
 const TYPES: [TrackType, string][] = [

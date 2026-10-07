@@ -2,7 +2,7 @@
 // alphaTab is used for GP3/4/5 parsing, engraving, and synth playback; it never owns the document.
 import * as at from '@coderline/alphatab';
 import './alphatabPatches';
-import type { Beat, Duration, MasterBar, Note, NoteEffects, Song, Track, TrackType } from '../model/song';
+import type { Beat, Duration, MasterBar, Note, NoteEffects, HarmonicType, Song, Track, TrackType } from '../model/song';
 import { barTicks, ticksToDurations } from '../model/rhythm';
 
 const m = at.model;
@@ -108,7 +108,8 @@ function readFx(n: at.model.Note): NoteEffects | undefined {
   if (n.isHammerPullOrigin) fx.hammer = true;
   if (n.slideOutType !== m.SlideOutType.None) fx.slide = n.slideOutType;
   if (n.slideInType !== m.SlideInType.None) fx.slideIn = n.slideInType;
-  if (n.vibrato !== m.VibratoType.None) fx.vibrato = true;
+  if (n.vibrato !== m.VibratoType.None) fx.vibrato = n.vibrato === m.VibratoType.Wide ? 'wide' : true;
+  if (n.harmonicType !== m.HarmonicType.None) fx.harmonic = { type: n.harmonicType as number as HarmonicType, value: n.harmonicValue };
   if (n.accentuated !== m.AccentuationType.None) fx.accent = true;
   if (n.isStaccato) fx.staccato = true;
   if (n.hasBend && n.bendPoints) fx.bend = n.bendPoints.map((p) => ({ offset: p.offset, value: p.value }));
@@ -169,11 +170,13 @@ export function songToScore(song: Song, settings: at.Settings): at.model.Score {
     st.showStandardNotation = true;
     score.addTrack(t);
 
+    // alphaTab chains each voice through every bar. Empty secondary voices are renderer data only.
+    const voiceCount = Math.max(1, ...tr.measures.map(meas => meas.voices.length));
     tr.measures.forEach((meas) => {
       const bar = new m.Bar();
       bar.clef = tr.type === 'drums' ? m.Clef.Neutral : tr.type === 'bass' ? m.Clef.F4 : m.Clef.G2;
       st.addBar(bar);
-      const voices = meas.voices.length ? meas.voices : [[]];
+      const voices = Array.from({ length: voiceCount }, (_, vi) => meas.voices[vi] ?? []);
       for (const beats of voices) {
         const v = new m.Voice();
         bar.addVoice(v);
@@ -227,7 +230,8 @@ function buildBeat(tr: Track, bt: Beat): at.model.Beat {
       n.isHammerPullOrigin = !!fx.hammer;
       if (fx.slide) n.slideOutType = fx.slide;
       if (fx.slideIn) n.slideInType = fx.slideIn;
-      if (fx.vibrato) n.vibrato = m.VibratoType.Slight;
+      if (fx.vibrato) n.vibrato = fx.vibrato === 'wide' ? m.VibratoType.Wide : m.VibratoType.Slight;
+      if (fx.harmonic) { n.harmonicType = fx.harmonic.type; n.harmonicValue = fx.harmonic.value; }
       if (fx.accent) n.accentuated = m.AccentuationType.Normal;
       n.isStaccato = !!fx.staccato;
       if (fx.bend) for (const p of fx.bend) n.addBendPoint(new m.BendPoint(p.offset, p.value));
