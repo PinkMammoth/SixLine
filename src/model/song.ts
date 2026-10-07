@@ -25,6 +25,8 @@ export interface MasterBar {
   repeatCount?: number;
   /** Bitflag of alternate ending numbers (bit 0 = 1st ending). */
   altEndings?: number;
+  /** Rehearsal label at this measure boundary. */
+  marker?: string;
 }
 
 export interface Track {

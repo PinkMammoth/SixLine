@@ -39,6 +39,7 @@ export function scoreToSong(score: at.model.Score): Song {
     if (mb.isRepeatStart) out.repeatStart = true;
     if (mb.repeatCount > 1) out.repeatCount = mb.repeatCount;
     if (mb.alternateEndings) out.altEndings = mb.alternateEndings;
+    if (mb.section) out.marker = mb.section.text || mb.section.marker;
     return out;
   });
   const first = score.masterBars[0]?.tempoAutomations[0]?.value ?? score.tempo;
@@ -138,6 +139,7 @@ export function songToScore(song: Song, settings: at.Settings): at.model.Score {
     if (bpm !== undefined) out.tempoAutomations.push(m.Automation.buildTempoAutomation(false, 0, bpm, 2));
     out.isRepeatStart = !!mb.repeatStart;
     out.repeatCount = mb.repeatCount ?? 0;
+    if (mb.marker) { out.section = new m.Section(); out.section.text = mb.marker; }
     out.alternateEndings = mb.altEndings ?? 0;
     score.addMasterBar(out);
   });

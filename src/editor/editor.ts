@@ -4,6 +4,8 @@ import { createTrack, emptyMeasure, isStringed, type Beat, type Duration, type M
 import { barTicks, beatTicks, voiceTicks } from '../model/rhythm';
 import { DRUM_KIT, SNARE_ROW } from '../model/drums';
 import { convertTrack } from '../model/convert';
+import { copyPassage, pastePassage, insertPassage, tieOrigins, type Passage } from './clipboard';
+import { selectionRange, type Selection } from './selection';
 
 export interface Cursor {
   track: number;
@@ -20,6 +22,8 @@ export interface Change {
   structural: boolean;
   /** A different document was loaded. */
   reset?: boolean;
+  /** Metadata-only changes do not regenerate playback. */
+  audio?: boolean;
 }
 
 type Scope = { kind: 'measure'; track: number; bar: number } | { kind: 'song' };
@@ -32,12 +36,16 @@ interface Entry {
   cursorBefore: Cursor;
   cursorAfter: Cursor;
   firstBar: number;
+  selectionBefore: Selection | null;
+  selectionAfter: Selection | null;
+  audio?: boolean;
 }
 
 const clone = <T>(v: T): T => structuredClone(v);
 
 export class Editor {
   cursor: Cursor = { track: 0, bar: 0, beat: 0, string: 0 };
+  selection: Selection | null = null;
   /** Duration used for newly created beats. */
   duration: Duration = 4;
   dirty = false;
@@ -63,6 +71,7 @@ export class Editor {
     this.song = song;
     this.undoStack = [];
     this.redoStack = [];
+    this.selection = null;
     this.cursor = { track: 0, bar: 0, beat: 0, string: song.tracks[0] ? this.defaultRow(song.tracks[0]) : 0 };
     this.dirty = false;
     this.emit({ firstBar: 0, structural: true, reset: true });
@@ -118,22 +127,24 @@ export class Editor {
    * Apply a mutation. scope 'measure' snapshots only the cursor's measure; 'song' snapshots everything.
    * merge=true folds this edit into the previous undo entry (used for multi-digit fret entry).
    */
-  edit(label: string, scope: 'measure' | 'song', fn: (song: Song) => void, opts: { merge?: boolean; firstBar?: number } = {}) {
+  edit(label: string, scope: 'measure' | 'song', fn: (song: Song) => void, opts: { merge?: boolean; firstBar?: number; audio?: boolean } = {}) {
     const sc: Scope = scope === 'song' ? { kind: 'song' } : { kind: 'measure', track: this.cursor.track, bar: this.cursor.bar };
     const cursorBefore = { ...this.cursor };
+    const selectionBefore = clone(this.selection);
     const before = this.snapshot(sc);
     fn(this.song);
     this.normalize();
     const firstBar = opts.firstBar ?? (sc.kind === 'measure' ? sc.bar : 0);
-    const entry: Entry = { label, scope: sc, before, after: this.snapshot(sc), cursorBefore, cursorAfter: { ...this.cursor }, firstBar };
+    const entry: Entry = { label, scope: sc, before, after: this.snapshot(sc), cursorBefore, cursorAfter: { ...this.cursor }, firstBar, selectionBefore, selectionAfter: clone(this.selection), audio: opts.audio };
     const last = this.undoStack[this.undoStack.length - 1];
     if (opts.merge && last && sameScope(last.scope, sc)) {
       last.after = entry.after;
       last.cursorAfter = entry.cursorAfter;
+      last.selectionAfter = entry.selectionAfter;
     } else this.undoStack.push(entry);
     this.redoStack = [];
     this.dirty = true;
-    this.emit({ firstBar, structural: sc.kind === 'song' });
+    this.emit({ firstBar, structural: sc.kind === 'song', audio: opts.audio });
     this.emitCursor();
   }
 
@@ -142,6 +153,7 @@ export class Editor {
     if (!e) return;
     this.restore(e.scope, e.before);
     this.cursor = { ...e.cursorBefore };
+    this.selection = clone(e.selectionBefore);
     this.redoStack.push(e);
     this.afterHistory(e);
   }
@@ -151,6 +163,7 @@ export class Editor {
     if (!e) return;
     this.restore(e.scope, e.after);
     this.cursor = { ...e.cursorAfter };
+    this.selection = clone(e.selectionAfter);
     this.undoStack.push(e);
     this.afterHistory(e);
   }
@@ -159,7 +172,7 @@ export class Editor {
     this.dirty = true;
     this.pendingDigit = null;
     this.clampCursor();
-    this.emit({ firstBar: e.firstBar, structural: e.scope.kind === 'song' });
+    this.emit({ firstBar: e.firstBar, structural: e.scope.kind === 'song', audio: e.audio });
     this.emitCursor();
   }
 
@@ -167,7 +180,7 @@ export class Editor {
     return sc.kind === 'song' ? clone(this.song) : clone(this.song.tracks[sc.track].measures[sc.bar]);
   }
   private restore(sc: Scope, data: Measure | Song) {
-    if (sc.kind === 'song') Object.assign(this.song, clone(data as Song));
+    if (sc.kind === 'song') this.song = clone(data as Song);
     else this.song.tracks[sc.track].measures[sc.bar] = clone(data as Measure);
   }
 
@@ -180,6 +193,14 @@ export class Editor {
         if (!m.voices[0].length) m.voices[0].push({ duration: this.duration, dots: 0, notes: [] });
       }
     this.clampCursor();
+    if (this.selection) {
+      const s = this.selection;
+      if (!this.song.tracks[s.track]) this.selection = null;
+      else for (const p of [s.anchor, s.focus]) {
+        p.bar = Math.max(0, Math.min(p.bar, this.song.masterBars.length - 1));
+        p.beat = Math.max(0, Math.min(p.beat, this.song.tracks[s.track].measures[p.bar].voices[0].length - 1));
+      }
+    }
   }
 
   clampCursor() {
@@ -197,14 +218,125 @@ export class Editor {
     for (const l of this.cursorListeners) l();
   }
 
-  setCursor(c: Partial<Cursor>) {
+  setCursor(c: Partial<Cursor>, extend = false, kind: Selection['kind'] = 'beats') {
     const from = this.track;
+    const anchor = this.selection?.anchor ?? { bar: this.cursor.bar, beat: this.cursor.beat };
+    const originalTrack = this.cursor.track;
     Object.assign(this.cursor, c);
     const to = this.song.tracks[this.cursor.track];
     if (c.string === undefined && to && to !== from && to.type !== from?.type) this.cursor.string = this.defaultRow(to);
     this.pendingDigit = null;
     this.clampCursor();
+    if (extend && originalTrack === this.cursor.track) this.selection = { track: this.cursor.track, anchor, focus: { bar: this.cursor.bar, beat: this.cursor.beat }, kind, rows: this.selection?.rows };
+    else this.selection = null;
     this.emitCursor();
+  }
+
+  clearSelection() { this.selection = null; this.emitCursor(); }
+
+  select(kind: Selection['kind'] = 'beats', rows?: number[]) {
+    this.selection = { track: this.cursor.track, anchor: { bar: this.cursor.bar, beat: this.cursor.beat }, focus: { bar: this.cursor.bar, beat: this.cursor.beat }, kind, rows };
+    this.emitCursor();
+  }
+
+  toggleSelectionRow(row: number, previous = this.selection) {
+    if (!previous?.rows || previous.track !== this.cursor.track) return this.select('beats', [row]);
+    const rows = previous.rows.includes(row) ? previous.rows.filter(r => r !== row) : [...previous.rows, row];
+    if (!rows.length) return this.clearSelection();
+    const { start, end } = selectionRange(this.song, previous), c = this.cursor;
+    const outside = c.bar < start.bar || c.bar > end.bar || c.bar === start.bar && c.beat < start.beat || c.bar === end.bar && c.beat > end.beat;
+    this.selection = { ...clone(previous), rows, focus: outside ? {bar:c.bar,beat:c.beat} : previous.focus };
+    this.emitCursor();
+  }
+
+  selectMeasures(first: number, last = first) {
+    const max = this.song.masterBars.length - 1;
+    first = Math.max(0, Math.min(max, first)); last = Math.max(0, Math.min(max, last));
+    this.selection = { track: this.cursor.track, kind: 'measures', anchor: { bar: first, beat: 0 }, focus: { bar: last, beat: 0 } };
+    Object.assign(this.cursor, { bar: last, beat: 0 });
+    this.emitCursor();
+  }
+
+  extendSelection(delta: number, measures = false) {
+    const c = this.cursor;
+    if (measures) return this.setCursor({ bar: c.bar + delta, beat: 0 }, true, 'measures');
+    let bar = c.bar, beat = c.beat + delta;
+    if (beat < 0 && bar > 0) { bar--; beat = this.track.measures[bar].voices[0].length - 1; }
+    if (beat >= this.track.measures[bar].voices[0].length && bar < this.song.masterBars.length - 1) { bar++; beat = 0; }
+    this.setCursor({ bar, beat }, true);
+  }
+
+  copy(): Passage {
+    return copyPassage(this.song, this.selection ?? { track: this.cursor.track, kind: 'beats', anchor: this.cursor, focus: this.cursor });
+  }
+
+  cut(): Passage {
+    const p = this.copy();
+    const s = this.selection ?? { track: this.cursor.track, kind: 'beats', anchor: this.cursor, focus: this.cursor } as Selection;
+    const { start, end } = selectionRange(this.song, s);
+    this.edit('Cut', 'song', song => {
+      const track = song.tracks[s.track], origins = tieOrigins(track);
+      for (let bar = start.bar; bar <= end.bar; bar++) {
+        const m = song.tracks[s.track].measures[bar];
+        for (let vi = 0; vi < m.voices.length; vi++) {
+          if (s.kind === 'beats' && vi > 0) continue;
+          m.voices[vi].forEach((b, i) => {
+            if (s.kind === 'beats' && (bar === start.bar && i < start.beat || bar === end.bar && i > end.beat)) return;
+            b.notes = s.rows ? b.notes.filter(n => !s.rows!.includes(isStringed(song.tracks[s.track]) ? n.string! : n.pitch!)) : [];
+          });
+        }
+      }
+      const remaining = new Set(track.measures.flatMap(m => m.voices.flatMap(v => v.flatMap(b => b.notes))));
+      for (const [note, origin] of origins) if (remaining.has(note) && !remaining.has(origin)) delete note.tie;
+      this.selection = null;
+      Object.assign(this.cursor, start);
+    }, { firstBar: start.bar });
+    return p;
+  }
+
+  paste(p: Passage) {
+    const result = pastePassage(this.song, this.cursor.track, this.cursor, p);
+    this.edit('Paste', 'song', () => { this.song = result; this.selection = null; }, { firstBar: this.cursor.bar });
+  }
+
+  duplicate() {
+    const s = this.selection ?? { track: this.cursor.track, kind: 'measures', anchor: this.cursor, focus: this.cursor } as Selection;
+    const { start, end } = selectionRange(this.song, s);
+    const p = copyPassage(this.song, s);
+    if (s.kind === 'measures' && !s.rows) {
+      const startTempo = this.song.masterBars.slice(0, start.bar + 1).reduce((tempo, b) => b.tempo ?? tempo, this.song.tempo);
+      const endTempo = this.song.masterBars.slice(0, end.bar + 1).reduce((tempo, b) => b.tempo ?? tempo, this.song.tempo);
+      if (startTempo !== endTempo) p.bars[0].tempo = startTempo;
+      const at = end.bar + 1, count = p.measures.length;
+      this.edit('Duplicate measures', 'song', song => {
+        song.masterBars.splice(at, 0, ...clone(p.bars));
+        song.tracks.forEach((t, i) => t.measures.splice(at, 0, ...(i === s.track ? clone(p.measures) : p.measures.map(() => emptyMeasure()))));
+        Object.assign(this.cursor, { track: s.track, bar: at, beat: 0 });
+        this.selection = { track: s.track, kind: 'measures', anchor: { bar: at, beat: 0 }, focus: { bar: at + count - 1, beat: 0 } };
+      }, { firstBar: at });
+    } else {
+      const at = { bar: end.bar, beat: end.beat + 1 };
+      const result = insertPassage(this.song, s.track, at, p);
+      const nextBar = voiceTicks(this.song.tracks[s.track].measures[at.bar].voices[0].slice(0, at.beat)) === barTicks(this.song.masterBars[at.bar]);
+      this.edit('Duplicate passage', 'song', () => { this.song = result; this.selection = null; Object.assign(this.cursor, nextBar ? { bar: at.bar + 1, beat: 0 } : at); }, { firstBar: start.bar });
+    }
+  }
+
+  goToMeasure(number: number) {
+    if (!Number.isInteger(number) || number < 1 || number > this.song.masterBars.length) throw new Error(`Enter a measure from 1 to ${this.song.masterBars.length}.`);
+    this.setCursor({ bar: number - 1, beat: 0 });
+  }
+
+  jumpMarker(delta: 1 | -1) {
+    for (let i = this.cursor.bar + delta; i >= 0 && i < this.song.masterBars.length; i += delta)
+      if (this.song.masterBars[i].marker) { this.setCursor({ bar: i, beat: 0 }); break; }
+  }
+
+  setMarker(label: string, bar = this.cursor.bar) {
+    this.edit(label.trim() ? 'Section marker' : 'Delete marker', 'song', song => {
+      if (label.trim()) song.masterBars[bar].marker = label.trim();
+      else delete song.masterBars[bar].marker;
+    }, { firstBar: bar, audio: false });
   }
 
   // ------------------------------------------------------------ queries
@@ -231,6 +363,7 @@ export class Editor {
 
   /** Right: next beat; past the end of an unfilled bar appends a rest; past a full bar goes to next bar (adding one at the end). */
   moveRight() {
+    if (this.selection) { const { end } = selectionRange(this.song, this.selection); this.setCursor(end); return; }
     const c = this.cursor;
     if (c.beat < this.beats.length - 1) return this.setCursor({ beat: c.beat + 1 });
     if (!this.barFull()) {
@@ -251,6 +384,7 @@ export class Editor {
   }
 
   moveLeft() {
+    if (this.selection) { const { start } = selectionRange(this.song, this.selection); this.setCursor(start); return; }
     const c = this.cursor;
     if (c.beat > 0) return this.setCursor({ beat: c.beat - 1 });
     if (c.bar > 0) {
@@ -415,6 +549,7 @@ export class Editor {
         const ref = s.masterBars[Math.min(at, s.masterBars.length - 1)] ?? { num: 4, den: 4 };
         s.masterBars.splice(at, 0, ...Array.from({ length: count }, () => ({ num: ref.num, den: ref.den })));
         for (const t of s.tracks) t.measures.splice(at, 0, ...Array.from({ length: count }, () => emptyMeasure()));
+        this.selection = null;
       },
       { firstBar: at },
     );
@@ -432,6 +567,7 @@ export class Editor {
         if (removed.tempo !== undefined && s.masterBars[at] && s.masterBars[at].tempo === undefined) s.masterBars[at].tempo = removed.tempo;
         for (const t of s.tracks) t.measures.splice(at, 1);
         this.cursor.beat = 0;
+        this.selection = null;
       },
       { firstBar: at },
     );
@@ -445,6 +581,7 @@ export class Editor {
       const t = createTrack(type, s.masterBars.length);
       if (n) t.name += ' ' + (n + 1);
       s.tracks.push(t);
+      this.selection = null;
       this.cursor = { track: s.tracks.length - 1, bar: this.cursor.bar, beat: 0, string: this.defaultRow(t) };
     });
   }
@@ -453,6 +590,7 @@ export class Editor {
     if (this.song.tracks.length <= 1) return;
     this.edit('Remove track', 'song', (s) => {
       s.tracks.splice(index, 1);
+      this.selection = null;
       this.cursor.beat = 0;
     });
   }
@@ -464,7 +602,7 @@ export class Editor {
       Object.assign(t, props);
       if (props.tuning)
         for (const m of t.measures) for (const v of m.voices) for (const b of v) b.notes = b.notes.filter((n) => n.string === undefined || n.string < t.tuning.length);
-    });
+    }, { audio: Object.keys(props).some(k => k !== 'name') });
   }
 
   /** Change a track's type (pitches kept; guitar/bass get automatic fingering). Returns notes that could not be placed. */

@@ -6,6 +6,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
 import { parseMidi } from 'midi-file';
+import { workflows } from './workflows.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const out = path.join(root, 'e2e/out');
@@ -155,12 +156,16 @@ for (const f of ['fixtures/fixture.gp3', 'fixtures/fixture.gp4']) {
     const r = await win.evaluate(() => ({ pos: window.sixline.playerPos.current, end: window.sixline.playerPos.end }));
     assert.ok(Math.abs(r.pos - r.end / 2) < 300, `expected ~${r.end / 2}, got ${r.pos}`);
   });
-  await step('clicking in the score seeks there', async () => {
+  await step('clicking in the score moves the caret without seeking playback', async () => {
+    await win.evaluate(() => { window.sixline.api.tickPosition = 1234; });
+    await win.waitForTimeout(200);
+    const before = await win.evaluate(() => window.sixline.api.tickPosition);
     const p = await tabPoint(win, 2, 0, 0);
     await win.mouse.click(p.x, p.y);
     await win.waitForTimeout(300);
     const tick = await win.evaluate(() => window.sixline.api.tickPosition);
-    assert.ok(Math.abs(tick - 2 * 3840) <= 2, `tick ${tick} should be the start of bar 3`);
+    assert.equal(tick, before, 'edit caret is independent of paused playback');
+    assert.deepEqual(await win.evaluate(() => [window.sixline.editor.cursor.bar,window.sixline.editor.cursor.beat]), [2,0]);
   });
 
   // -------------------------------------------------------------------------------------------
@@ -815,5 +820,6 @@ if (fs.existsSync(big)) {
   });
 }
 
+await workflows({launch,closeApp,step,waitIdle,root,out,tabPoint});
 console.log(failures ? `\n${failures} FAILED` : '\nall e2e checks passed');
 process.exit(failures ? 1 : 0);

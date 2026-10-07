@@ -53,6 +53,13 @@ npm run test:e2e  # builds, then drives the real Electron app with Playwright
 | ←/→ | previous/next beat (→ past the end of an unfilled bar adds a beat; past the last bar adds a bar) |
 | ↑/↓ | previous/next string |
 | Ctrl+←/→, PgUp/PgDn | previous/next bar |
+| Shift+←/→ | extend the selection by beat (does not add beats) |
+| Ctrl+Shift+←/→ | extend the selection by complete measure |
+| Ctrl+A / Escape | select all measures / clear selection |
+| Ctrl+C / Ctrl+X / Ctrl+V | copy / cut to rests / paste at caret |
+| Ctrl+D | duplicate selection after itself; otherwise duplicate current measure |
+| Ctrl+G | go to measure |
+| Ctrl+Home / Ctrl+End | beginning / end of song |
 | 0-9 | enter a fret (two quick digits = multi-digit fret, e.g. 1 2 → 12) |
 | Del / Backspace | delete the note on the cursor string |
 | Ins / Ctrl+Del | insert / delete a beat |
@@ -62,6 +69,8 @@ npm run test:e2e  # builds, then drives the real Electron app with Playwright
 | . | dotted |
 | T (tab tracks), Shift+T (any track) | triplet |
 | Space | play / pause |
+| Ctrl+Space | play from caret or selection start |
+| Ctrl+L | loop the selected musical range |
 | Ctrl+Z, Ctrl+Y / Ctrl+Shift+Z | undo, redo |
 | Ctrl+N / Ctrl+O / Ctrl+S / Ctrl+Shift+S | new, open, save, save as |
 | Ctrl+W, Ctrl+Tab / Ctrl+Shift+Tab (or Ctrl+PgDn/PgUp) | close tab, next/previous tab |
@@ -92,7 +101,25 @@ The current pitch or kit piece is shown in the status bar. Pick a GM instrument 
 
 Each open song is a tab; opening a file adds a tab (an untouched Untitled tab is replaced, and a file that is already open is just focused). Closing or quitting with unsaved changes asks first.
 
-Clicking in the score moves both the edit caret and the playback position. Click the time signature in the toolbar to change it from the current bar on. Add or remove tracks from the Track menu.
+Clicking in the score moves the edit caret independently of playback. Shift-click extends a beat range. Ctrl-click selects string/pitch rows; additional Ctrl-clicks toggle rows inside the range. The Edit menu also selects beats, chords, notes and measures. Click the time signature in the toolbar to change it from the current bar on. Add or remove tracks from the Track menu.
+
+## Composition and practice (v0.2)
+
+Copy and paste preserve the model's notes, velocities, rests, durations, tuplets, grace notes, tremolo, effects and valid ties. Beat selections use the primary voice; complete measure selections include every imported voice. Cut leaves silence with the same durations. Paste overwrites musical time, extends every track together when required, and is one undo operation. The clipboard is local to the running SixLine window and works across document tabs. Cross-track paste requires the same instrument type; stringed tracks also require the same tuning and capo.
+
+Measure duplication inserts shared bars after the selected range, copies the active track and leaves empty measures on the other tracks. With no selection it copies the current measure. Beat duplication inserts time into the primary voice and reflows the following beats. Each operation is one undo step, including its caret and selection state.
+
+Paste and duplication reject placements that would split an existing note or pasted beat across a bar line. Grace notes and multiple voices require whole-measure operations; pasting multiple voices requires a measure boundary. Whole measures with one ordinary voice can paste from a mid-bar caret when the rhythms fit. Measure-boundary paste requires matching meters. Empty destinations get exact rest padding, including triplet rests. Rejected operations leave the document and undo history untouched.
+
+The compact practice row provides speed (25–200%, including 50/60/70/80/90/100/110/120%), Loop Selection, saved-loop on/off, A/B points, metronome and off/one/two-bar count-in. Speed changes use the synthesizer's tempo multiplier and preserve pitch and musical position. A is inclusive and B is exclusive; set both at the caret and press A-B. Clear Loop removes both markers and the saved range. Loop Selection snapshots the range, so later caret or selection changes do not change it. Ranges that cross a repeat into unselected bars are rejected rather than looping extra music.
+
+The metronome uses simple oscillator clicks, accents bar starts, and follows the player's repeat-expanded tick/tempo/meter timeline. Count-in uses the meter and tempo at the actual playback start, applies speed, and can be cancelled with Space or Stop. Count-in runs before starting playback (including a loop) and before resuming with Space; it does not repeat at every loop boundary. Practice settings are per open tab and are not song edits or exported MIDI events.
+
+Use Marker… to add or rename a rehearsal label at the current measure. The Navigate menu deletes labels and moves to the next/previous label; the marker dropdown jumps directly to any label. Labels appear above the score, survive saving/reopening, and follow inserted/deleted measures. Imported GP rehearsal sections are mapped; MIDI marker import is deferred.
+
+Track switching, edit caret/selection changes, row/pitch navigation and non-destructive dialogs retain the same score/player and keep playback running. Marker and track-name changes redraw without regenerating audio. Musical edits regenerate playback while restoring the previous musical tick and playing/paused state. Switching document tabs intentionally stops playback.
+
+The E2E suite includes four-bar riff composition with duplicate/edit/undo/redo/save/reopen, exact GP5 looping at 70% with metronome/count-in (including played-note boundary checks), playback continuity with monotonic ticks, and marker persistence/navigation. Screenshots are written to `e2e/out/`.
 
 ## MIDI import
 

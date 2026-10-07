@@ -36,4 +36,6 @@ function validate(s: Song) {
   if (!Array.isArray(s?.masterBars) || !Array.isArray(s.tracks)) throw new Error('Corrupt project: missing bars/tracks');
   for (const t of s.tracks)
     if (t.measures.length !== s.masterBars.length) throw new Error(`Corrupt project: track "${t.name}" has wrong bar count`);
+  for (const b of s.masterBars)
+    if (b.marker !== undefined && typeof b.marker !== 'string') throw new Error('Corrupt project: invalid section marker');
 }

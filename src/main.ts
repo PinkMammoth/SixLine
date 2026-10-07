@@ -10,7 +10,11 @@ import { importDialog, reportDialog } from './ui/importDialog';
 import { initialFile, onOpenFile, openFile, saveFile, type OpenedFile } from './platform/host';
 import { buildMenus, type MenuDef } from './ui/menu';
 import { locateCaret } from './ui/caret';
-import { newSongDialog, pitchName, timeSignatureDialog, trackDialog, unsavedDialog } from './ui/dialogs';
+import { newSongDialog, pitchName, timeSignatureDialog, trackDialog, unsavedDialog, measureDialog, markerDialog } from './ui/dialogs';
+import { selectionRange } from './editor/selection';
+import type { Passage } from './editor/clipboard';
+import { PracticeState, CountIn, tempoAtBar, clampLoopTick } from './playback/practice';
+import { Metronome, elapsedMs, type ClickBar } from './playback/metronome';
 import { bindDrumGrid, renderDrumGrid } from './ui/drumgrid';
 import { DRUM_BY_SHORTCUT, drumName } from './model/drums';
 
@@ -24,6 +28,7 @@ interface Doc {
   filePath: string | null;
   fileName: string;
   scrollTop: number;
+  practice: PracticeState;
 }
 const docs: Doc[] = [];
 let active: Doc = newDoc(createSong({ tracks: ['guitar'] }), null, 'Untitled.tabproj');
@@ -47,6 +52,12 @@ let playerState = 0; // 0 paused/stopped, 1 playing
 let playerPos = { current: 0, end: 0 };
 let message = '';
 let messageTimer = 0;
+let clipboard: Passage | null = null;
+const countIn = new CountIn();
+const metronome = new Metronome();
+let clickBars: ClickBar[] = [];
+let pendingAudio = false;
+let resumePlayback: { tick: number; playing: boolean } | null = null;
 
 // ------------------------------------------------------------------ alphaTab
 
@@ -61,7 +72,7 @@ const api = new at.AlphaTabApi($('at'), {
     soundFont: './soundfont/sonivox.sf2',
     scrollElement: $('score'),
     enableCursor: true,
-    enableUserInteraction: true,
+    enableUserInteraction: false,
     // auto-scroll follows playback only while playing; otherwise the view follows the edit caret
     scrollMode: at.ScrollMode.Off,
   },
@@ -83,6 +94,8 @@ api.renderFinished.on(() => {
 });
 api.playerStateChanged.on((e) => {
   playerState = e.state;
+  if (e.state !== 1) metronome.cancel();
+  else if (active.practice.metronome) metronome.update(clickBars, api.tickPosition, active.practice.speed, active.practice.looping ? active.practice.loop : null);
   const mode = e.state === 1 ? at.ScrollMode.Continuous : at.ScrollMode.Off;
   if (api.settings.player.scrollMode !== mode) {
     api.settings.player.scrollMode = mode;
@@ -91,6 +104,13 @@ api.playerStateChanged.on((e) => {
   updateToolbar();
 });
 api.playerPositionChanged.on((e) => {
+  const loop = active.practice.looping ? active.practice.loop : null;
+  const tick = clampLoopTick(e.currentTick, loop);
+  if (tick !== e.currentTick) {
+    // AlphaTab gates MIDI at the exact end, but reports elapsed audio-buffer time past it.
+    // Normalize the public musical position before the cursor and other listeners consume it.
+    Object.assign(e, { currentTick: tick, currentTime: elapsedMs(clickBars, 0, tick, active.practice.speed) });
+  }
   playerPos = { current: e.currentTime, end: e.endTime };
   const seek = $<HTMLInputElement>('seek');
   if (seek && document.activeElement !== seek) {
@@ -98,6 +118,18 @@ api.playerPositionChanged.on((e) => {
     seek.value = String(e.currentTime);
   }
   $('time').textContent = `${fmtTime(e.currentTime)} / ${fmtTime(e.endTime)}`;
+  if (playerState === 1 && active.practice.metronome) metronome.update(clickBars, e.currentTick, active.practice.speed, active.practice.looping ? active.practice.loop : null, e.isSeek);
+});
+// PlayerReady covers MIDI regeneration without AlphaTab 1.8's recursive loadedMidiInfo getter.
+api.playerReady.on(() => {
+  clickBars = api.tickCache?.masterBars.map(b => ({ start: b.start, end: b.end, num: b.masterBar.timeSignatureNumerator, den: b.masterBar.timeSignatureDenominator, tempos: b.tempoChanges.map(t => ({ tick: t.tick, tempo: t.tempo })) })) ?? [];
+  applyPractice();
+  if (resumePlayback) {
+    const saved = resumePlayback;
+    resumePlayback = null;
+    api.tickPosition = Math.min(saved.tick, Math.max(0, (api.tickCache?.masterBars.at(-1)?.end ?? saved.tick + 1) - 1));
+    if (saved.playing) api.play();
+  }
 });
 api.soundFontLoaded.on(() => updateStatus());
 api.error.on((e) => {
@@ -116,6 +148,8 @@ function newDoc(song: Song, filePath: string | null, fileName: string): Doc {
     pendingFirstBar = pendingFirstBar === null ? c.firstBar : Math.min(pendingFirstBar, c.firstBar);
     pendingStructural ||= c.structural;
     pendingReset ||= !!c.reset;
+    pendingAudio ||= c.audio !== false;
+    if (c.audio !== false && countIn.active) { countIn.cancel(); updateToolbar(); }
     scheduleRender();
   });
   ed.onCursor(() => {
@@ -124,7 +158,7 @@ function newDoc(song: Song, filePath: string | null, fileName: string): Doc {
     updateCaret();
     updateStatus();
   });
-  return { editor: ed, filePath, fileName, scrollTop: 0 };
+  return { editor: ed, filePath, fileName, scrollTop: 0, practice: new PracticeState() };
 }
 
 /** Show a document: everything (render, tracks, status, playback) switches to it. */
@@ -132,8 +166,12 @@ function activate(doc: Doc) {
   if (doc === active && editor === doc.editor && score) return;
   active.scrollTop = $('score').scrollTop;
   api.stop();
+  countIn.cancel();
+  metronome.cancel();
+  resumePlayback = null;
   active = doc;
   editor = doc.editor;
+  applyPractice();
   score = null;
   renderedTrack = -1;
   pendingReset = true;
@@ -216,7 +254,7 @@ function flushRender() {
   renderQueued = false;
   renderStart = performance.now();
   const track = editor.cursor.track;
-  const docChanged = !score || pendingStructural || pendingFirstBar !== null;
+  const docChanged = !score || pendingAudio;
   const incremental = track === renderedTrack && !pendingStructural && pendingFirstBar !== null;
   // Same document, track and shape (e.g. tempo, time signature, mixer changes): keep the current drawing on
   // screen while re-rendering instead of blanking it (flicker). alphaTab cannot do this across layout changes.
@@ -228,12 +266,26 @@ function flushRender() {
       ? { reuseViewport: true, firstChangedMasterBar: 0 }
       : undefined;
   renderedShape = shape;
+  const reset = pendingReset;
   pendingReset = false;
   pendingFirstBar = null;
   pendingStructural = false;
   // Only a document change needs a new alphaTab Score. Showing another track re-renders the same Score,
   // which alphaTab treats as a view change and leaves the player (and playback position) alone.
-  if (docChanged) score = songToScore(editor.song, api.settings);
+  if (docChanged) {
+    if (score && !reset) resumePlayback = { tick: api.tickPosition, playing: playerState === 1 };
+    score = songToScore(editor.song, api.settings);
+  } else if (score) {
+    // Rehearsal labels affect engraving only; retain the score identity and its player.
+    score.masterBars.forEach((b, i) => {
+      const label = editor.song.masterBars[i].marker;
+      b.section = label ? new at.model.Section() : null;
+      if (b.section) b.section.text = label!;
+    });
+    score.tracks.forEach((t, i) => { t.name = editor.song.tracks[i].name; });
+  }
+  pendingAudio = false;
+  if (track !== renderedTrack && !reset) restoreScroll = $('score').scrollTop;
   renderedTrack = track;
   rendering = true;
   api.renderScore(score!, [track], hints);
@@ -248,6 +300,7 @@ function cursorBeat() {
 }
 
 function updateCaret() {
+  updateSelection();
   const el = $('caret');
   const beat = cursorBeat();
   const box = beat && api.boundsLookup ? locateCaret(api.boundsLookup, beat, editor.track, editor.cursor.string) : null;
@@ -260,6 +313,41 @@ function updateCaret() {
   if (playerState !== 1) scrollIntoView(box);
 }
 
+function updateSelection() {
+  const el = $('selection');
+  el.replaceChildren();
+  const s = editor.selection;
+  if (!s || s.track !== renderedTrack || !score || !api.boundsLookup) return;
+  const { start, end } = selectionRange(editor.song, s);
+  for (let bar = start.bar; bar <= end.bar; bar++) {
+    const beats = score.tracks[s.track].staves[0].bars[bar].voices[0].beats;
+    const selected = s.kind === 'measures' ? beats : beats.slice(bar === start.bar ? start.beat : 0, bar === end.bar ? end.beat + 1 : undefined);
+    for (const beat of selected) {
+      const bounds = api.boundsLookup.findBeats(beat);
+      if (!bounds?.length) continue;
+      if (s.rows) {
+        for (const bound of bounds) for (const n of bound.notes ?? []) {
+          const row = isStringed(editor.track) ? editor.track.tuning.length - n.note.string : editor.track.type === 'drums' ? n.note.percussionArticulation : n.note.realValue;
+          if (!s.rows.includes(row)) continue;
+          const rect = n.noteHeadBounds, box = document.createElement('div');
+          box.className = 'selected-beat';
+          Object.assign(box.style, { left: rect.x - 3 + 'px', top: rect.y - 3 + 'px', width: rect.w + 6 + 'px', height: rect.h + 6 + 'px' });
+          el.appendChild(box);
+        }
+        continue;
+      }
+      const first = bounds[0], last = bounds[bounds.length - 1];
+      const box = document.createElement('div');
+      box.className = 'selected-beat';
+      const x = s.kind === 'measures' ? first.barBounds.visualBounds.x : first.realBounds.x;
+      const w = s.kind === 'measures' ? first.barBounds.visualBounds.w : first.realBounds.w;
+      Object.assign(box.style, { left: x + 'px', top: first.barBounds.visualBounds.y - 8 + 'px', width: Math.max(16, w) + 'px', height: last.barBounds.visualBounds.y + last.barBounds.visualBounds.h - first.barBounds.visualBounds.y + 16 + 'px' });
+      el.appendChild(box);
+      if (s.kind === 'measures') break;
+    }
+  }
+}
+
 function scrollIntoView(b: { x: number; y: number; w: number; h: number }) {
   const sc = $('score');
   const pad = 40;
@@ -267,7 +355,7 @@ function scrollIntoView(b: { x: number; y: number; w: number; h: number }) {
   else if (b.y + b.h > sc.scrollTop + sc.clientHeight - pad) sc.scrollTop = b.y + b.h - sc.clientHeight + pad;
 }
 
-// Click in the score: focus the beat/string under the mouse (alphaTab also seeks the player there).
+// Edit interaction is independent of alphaTab's seeking and playback-range interaction.
 $('at').addEventListener('mousedown', (ev) => {
   if (!api.boundsLookup || !score) return;
   const r = $('at').getBoundingClientRect();
@@ -277,6 +365,8 @@ $('at').addEventListener('mousedown', (ev) => {
   if (!beat || beat.voice.index !== 0) return;
   let string = editor.cursor.string;
   const tr = editor.track;
+  const clickedNote = api.boundsLookup.getNoteAtPos(beat, x, y);
+  if (!isStringed(tr) && clickedNote) string = editor.rowForPitch(tr.type === 'drums' ? clickedNote.percussionArticulation : clickedNote.realValue);
   if (isStringed(tr)) {
     // choose the nearest tab line
     let best = Infinity;
@@ -290,7 +380,9 @@ $('at').addEventListener('mousedown', (ev) => {
       }
     }
   }
-  editor.setCursor({ bar: beat.voice.bar.index, beat: beat.index, string });
+  const previousSelection = editor.selection;
+  editor.setCursor({ bar: beat.voice.bar.index, beat: Math.min(beat.index, editor.track.measures[beat.voice.bar.index].voices[0].length - 1), string }, ev.shiftKey);
+  if (ev.ctrlKey || ev.metaKey) editor.toggleSelectionRow(isStringed(tr) ? string : editor.rowPitch(), previousSelection);
 });
 
 // ------------------------------------------------------------------ files
@@ -402,10 +494,103 @@ async function editTimeSignature() {
 // ------------------------------------------------------------------ playback
 
 function playPause() {
-  api.playPause();
+  if (countIn.active) { countIn.cancel(); updateToolbar(); return; }
+  if (playerState === 1) api.pause();
+  else startPlayback(false);
 }
 function stop() {
+  countIn.cancel();
+  resumePlayback = null;
   api.stop();
+  updateToolbar();
+}
+
+function command(fn: () => void) {
+  try { fn(); } catch (e) { setMessage((e as Error).message); }
+}
+function copy(cut = false) {
+  command(() => { clipboard = cut ? editor.cut() : editor.copy(); setMessage(cut ? 'Cut passage (rhythm retained as rests)' : 'Copied passage'); });
+}
+function paste() { command(() => { if (!clipboard) throw new Error('Copy a passage in SixLine first.'); editor.paste(clipboard); }); }
+function duplicate() { command(() => editor.duplicate()); }
+
+function caretTick() {
+  const b = cursorBeat();
+  if (!b || !api.tickCache) throw new Error('Wait for the score to finish loading.');
+  return api.tickCache.getBeatStart(b);
+}
+function loopSelection() {
+  command(() => {
+    if (!editor.selection || !score || !api.tickCache) throw new Error('Select a beat or measure range first.');
+    const s = editor.selection, { start, end } = selectionRange(editor.song, s);
+    const bars = score.tracks[s.track].staves[0].bars;
+    const first = bars[start.bar].voices[0].beats[start.beat];
+    const last = bars[end.bar].voices[0].beats[end.beat];
+    const startTick = s.kind === 'measures' ? api.tickCache.getMasterBar(score.masterBars[start.bar]).start : api.tickCache.getBeatStart(first);
+    const endTick = s.kind === 'measures' ? api.tickCache.getMasterBar(score.masterBars[end.bar]).end : api.tickCache.getBeatStart(last) + last.playbackDuration;
+    const outside = api.tickCache.masterBars.some(b => b.start >= startTick && b.start < endTick && (b.masterBar.index < start.bar || b.masterBar.index > end.bar));
+    if (outside) throw new Error('This range crosses a repeat into unselected measures. Select one continuous playback passage.');
+    active.practice.setLoop({ startTick, endTick }, 'selection');
+    applyPractice(); updateToolbar();
+  });
+}
+function toggleLoop() {
+  command(() => {
+    const p = active.practice;
+    if (!p.loop) throw new Error('Use Loop Selection or set A and B first.');
+    p.looping = !p.looping; applyPractice(); updateToolbar();
+  });
+}
+function setLoopPoint(which: 'a' | 'b') {
+  command(() => { active.practice[which] = caretTick(); updateToolbar(); });
+}
+function enableAB() { command(() => { active.practice.enableAB(); applyPractice(); updateToolbar(); }); }
+function clearLoop() { active.practice.clearLoop(); applyPractice(); updateToolbar(); }
+function applyPractice() {
+  const p = active.practice;
+  api.playbackSpeed = p.speed / 100;
+  api.metronomeVolume = 0;
+  api.countInVolume = 0;
+  api.playbackRange = p.looping && p.loop ? Object.assign(new at.synth.PlaybackRange(), p.loop) : null;
+  api.isLooping = p.looping;
+}
+function startPlayback(fromCaret: boolean) {
+  command(() => {
+    if (!api.isReadyForPlayback || renderQueued || rendering) throw new Error('Playback is still loading.');
+    countIn.cancel();
+    if (fromCaret) {
+      if (playerState === 1) api.pause();
+      let tick = caretTick();
+      if (editor.selection && score && api.tickCache) {
+        const { start } = selectionRange(editor.song, editor.selection);
+        const b = score.tracks[editor.selection.track].staves[0].bars[start.bar].voices[0].beats[start.beat];
+        tick = api.tickCache.getBeatStart(b);
+      }
+      api.tickPosition = tick;
+    }
+    const p = active.practice;
+    if (p.metronome) metronome.ready().catch(e => setMessage('Metronome failed: ' + e.message));
+    if (p.looping && p.loop && (api.tickPosition < p.loop.startTick || api.tickPosition >= p.loop.endTick)) api.tickPosition = p.loop.startTick;
+    const startTick = api.tickPosition;
+    const lookup = api.tickCache?.masterBars.find(b => b.start <= startTick && startTick < b.end);
+    const bar = lookup?.masterBar.index ?? editor.cursor.bar;
+    const mb = editor.song.masterBars[bar];
+    const tempo = lookup?.tempoChanges.filter(t => t.tick <= startTick).at(-1)?.tempo ?? tempoAtBar(editor.song, bar);
+    if (p.countIn) {
+      setMessage(`Count-in: ${p.countIn} bar${p.countIn === 1 ? '' : 's'}`);
+      countIn.start(mb.num, mb.den, tempo, p.countIn, () => p.speed, () => { api.tickPosition = startTick; api.play(); updateToolbar(); }).catch(e => { countIn.cancel(); setMessage('Count-in failed: ' + e.message); updateToolbar(); });
+      updateToolbar();
+    } else api.play();
+  });
+}
+async function goToMeasure() {
+  const n = await measureDialog(editor.cursor.bar + 1, editor.song.masterBars.length);
+  if (n !== null) command(() => editor.goToMeasure(n));
+}
+async function editMarker() {
+  const ed = editor, bar = ed.cursor.bar;
+  const label = await markerDialog(ed.song.masterBars[bar].marker ?? '');
+  if (label !== null) ed.setMarker(label, bar);
 }
 
 // ------------------------------------------------------------------ keyboard
@@ -429,6 +614,18 @@ window.addEventListener('keydown', (e) => {
     else if (lk === 'o') doOpen();
     else if (lk === 'n') doNew();
     else if (lk === 'w') closeDoc();
+    else if (lk === 'c') copy();
+    else if (lk === 'x') copy(true);
+    else if (lk === 'v') paste();
+    else if (lk === 'd') duplicate();
+    else if (lk === 'a') editor.selectMeasures(0, editor.song.masterBars.length - 1);
+    else if (lk === 'g') goToMeasure();
+    else if (lk === 'l') loopSelection();
+    else if (k === ' ') startPlayback(true);
+    else if (k === 'Home') editor.setCursor({ bar: 0, beat: 0 });
+    else if (k === 'End') editor.setCursor({ bar: editor.song.masterBars.length - 1, beat: editor.track.measures.at(-1)!.voices[0].length - 1 });
+    else if (k === 'ArrowRight' && e.shiftKey) editor.extendSelection(1, true);
+    else if (k === 'ArrowLeft' && e.shiftKey) editor.extendSelection(-1, true);
     else if (k === 'Tab') cycleDoc(e.shiftKey ? -1 : 1);
     else if (k === 'PageDown') cycleDoc(1);
     else if (k === 'PageUp') cycleDoc(-1);
@@ -449,6 +646,8 @@ window.addEventListener('keydown', (e) => {
   else if (k === 'Enter') editor.toggleAtCursor();
   else if (k === 'ArrowUp' && e.shiftKey) editor.transposeNote(1);
   else if (k === 'ArrowDown' && e.shiftKey) editor.transposeNote(-1);
+  else if (k === 'ArrowRight' && e.shiftKey) editor.extendSelection(1);
+  else if (k === 'ArrowLeft' && e.shiftKey) editor.extendSelection(-1);
   else if (k === 'ArrowRight') editor.moveRight();
   else if (k === 'ArrowLeft') editor.moveLeft();
   else if (k === 'ArrowUp') editor.moveString(-1);
@@ -464,7 +663,7 @@ window.addEventListener('keydown', (e) => {
   else if (k === '-' || k === '_') editor.stepDuration(-1);
   else if (k === '.') editor.toggleDot();
   else if (k === 'T' || (k === 't' && isStringed(editor.track))) editor.toggleTriplet();
-  else if (k === 'Escape') closeMenus();
+  else if (k === 'Escape') { editor.clearSelection(); closeMenus(); }
   else if (k === 'F6') editTrack();
   else handled = false;
   if (handled) e.preventDefault();
@@ -491,6 +690,16 @@ const menus: MenuDef[] = [
     items: [
       { label: 'Undo', key: 'Ctrl+Z', run: () => editor.undo(), enabled: () => editor.canUndo },
       { label: 'Redo', key: 'Ctrl+Y', run: () => editor.redo(), enabled: () => editor.canRedo },
+      null,
+      { label: 'Copy', key: 'Ctrl+C', run: () => copy() },
+      { label: 'Cut', key: 'Ctrl+X', run: () => copy(true) },
+      { label: 'Paste', key: 'Ctrl+V', run: paste, enabled: () => !!clipboard },
+      { label: 'Duplicate selection / measure', key: 'Ctrl+D', run: duplicate },
+      { label: 'Select beat / chord', run: () => editor.select() },
+      { label: 'Select note on current row', run: () => editor.select('beats', [isStringed(editor.track) ? editor.cursor.string : editor.rowPitch()]) },
+      { label: 'Select measure', run: () => editor.selectMeasures(editor.cursor.bar) },
+      { label: 'Select all measures', key: 'Ctrl+A', run: () => editor.selectMeasures(0, editor.song.masterBars.length - 1) },
+      { label: 'Clear selection', key: 'Esc', run: () => editor.clearSelection() },
       null,
       { label: 'Insert beat', key: 'Ins', run: () => editor.insertBeat() },
       { label: 'Delete beat', key: 'Ctrl+Del', run: () => editor.deleteBeat() },
@@ -519,7 +728,30 @@ const menus: MenuDef[] = [
     title: 'Playback',
     items: [
       { label: 'Play / Pause', key: 'Space', run: playPause },
+      { label: 'Play from caret / selection', key: 'Ctrl+Space', run: () => startPlayback(true) },
       { label: 'Stop', run: stop },
+      null,
+      { label: 'Loop Selection', key: 'Ctrl+L', run: loopSelection },
+      { label: 'Enable / Disable loop', run: toggleLoop },
+      { label: 'Set A at caret', run: () => setLoopPoint('a') },
+      { label: 'Set B at caret (exclusive end)', run: () => setLoopPoint('b') },
+      { label: 'Enable A-B loop', run: enableAB },
+      { label: 'Clear loop markers', run: clearLoop },
+    ],
+  },
+  {
+    title: 'Navigate',
+    items: [
+      { label: 'Go to measure…', key: 'Ctrl+G', run: goToMeasure },
+      { label: 'Next measure', key: 'Ctrl+Right', run: () => editor.moveBar(1) },
+      { label: 'Previous measure', key: 'Ctrl+Left', run: () => editor.moveBar(-1) },
+      { label: 'Beginning of song', key: 'Ctrl+Home', run: () => editor.setCursor({ bar: 0, beat: 0 }) },
+      { label: 'End of song', key: 'Ctrl+End', run: () => editor.setCursor({ bar: editor.song.masterBars.length - 1, beat: editor.track.measures.at(-1)!.voices[0].length - 1 }) },
+      null,
+      { label: 'Add / Rename marker…', run: editMarker },
+      { label: 'Delete marker', run: () => editor.setMarker('') },
+      { label: 'Next marker', run: () => editor.jumpMarker(1) },
+      { label: 'Previous marker', run: () => editor.jumpMarker(-1) },
     ],
   },
 ];
@@ -546,6 +778,35 @@ function buildToolbar() {
     <button id="b-redo" title="Redo (Ctrl+Y)">↷</button>
     <span class="sep"></span>
     <span id="trackname" class="lbl"></span>`;
+  const practice = document.createElement('div');
+  practice.id = 'practicebar';
+  practice.innerHTML = `<button id="b-caret" title="Play from caret / selection (Ctrl+Space)">Play here</button>
+    <label>Speed <input id="speed" type="number" min="25" max="200" step="10" value="100" list="speeds">%</label>
+    <datalist id="speeds">${[50,60,70,80,90,100,110,120].map(n => `<option value="${n}"></option>`).join('')}</datalist>
+    <button id="b-loop-selection" title="Loop Selection (Ctrl+L)">Loop selection</button>
+    <button id="b-loop" title="Enable / Disable saved loop">Loop off</button>
+    <button id="b-a" title="Set A at caret">A</button><button id="b-b" title="Set B at caret (exclusive end)">B</button>
+    <button id="b-ab" title="Enable A-B loop">A-B</button><button id="b-clear-loop" title="Clear loop markers">Clear loop</button>
+    <label><input id="metronome" type="checkbox">Metronome</label>
+    <label>Count-in <select id="count-in"><option value="0">Off</option><option value="1">1 bar</option><option value="2">2 bars</option></select></label>
+    <select id="markers" aria-label="Jump to section marker"><option value="">Markers…</option></select>
+    <button id="b-marker" title="Add / Rename section marker">Marker…</button>`;
+  tb.after(practice);
+  $('b-caret').onclick = () => startPlayback(true);
+  $('b-loop-selection').onclick = loopSelection;
+  $('b-loop').onclick = toggleLoop;
+  $('b-a').onclick = () => setLoopPoint('a'); $('b-b').onclick = () => setLoopPoint('b');
+  $('b-ab').onclick = enableAB; $('b-clear-loop').onclick = clearLoop;
+  $<HTMLInputElement>('speed').onchange = () => command(() => { active.practice.setSpeed(Number($<HTMLInputElement>('speed').value)); api.playbackSpeed = active.practice.speed / 100; updateToolbar(); });
+  $<HTMLInputElement>('metronome').onchange = () => {
+    active.practice.metronome = $<HTMLInputElement>('metronome').checked;
+    if (active.practice.metronome) metronome.ready().catch(e => setMessage('Metronome failed: ' + e.message));
+    else metronome.cancel();
+  };
+  $<HTMLSelectElement>('count-in').onchange = () => { active.practice.countIn = Number($<HTMLSelectElement>('count-in').value) as 0 | 1 | 2; };
+  $<HTMLSelectElement>('markers').onchange = () => { const el = $<HTMLSelectElement>('markers'); if (el.value !== '') editor.goToMeasure(Number(el.value) + 1); el.value = ''; el.blur(); };
+  $('b-marker').onclick = editMarker;
+  practice.querySelectorAll('button').forEach(b => b.addEventListener('mouseup', () => b.blur()));
   $('b-play').onclick = playPause;
   $('b-stop').onclick = stop;
   $('b-dot').onclick = () => editor.toggleDot();
@@ -589,6 +850,20 @@ function updateToolbar() {
   $('b-trip').classList.toggle('on', !!beat.tuplet);
   $<HTMLButtonElement>('b-undo').disabled = !editor.canUndo;
   $<HTMLButtonElement>('b-redo').disabled = !editor.canRedo;
+  const p = active.practice;
+  if (document.activeElement !== $('speed')) $<HTMLInputElement>('speed').value = String(p.speed);
+  $<HTMLInputElement>('metronome').checked = p.metronome;
+  $<HTMLSelectElement>('count-in').value = String(p.countIn);
+  $('b-loop').textContent = p.looping ? `Loop ${p.loopSource === 'ab' ? 'A-B' : 'selection'}` : 'Loop off';
+  $('b-loop').classList.toggle('on', p.looping);
+  $('b-a').classList.toggle('on', p.a !== null); $('b-b').classList.toggle('on', p.b !== null);
+  $('b-a').title = `Set A at caret${p.a === null ? '' : ` (tick ${p.a})`}`;
+  $('b-b').title = `Set B at caret (exclusive end)${p.b === null ? '' : ` (tick ${p.b})`}`;
+  if (countIn.active) $('b-play').textContent = '…';
+  const markers = $<HTMLSelectElement>('markers');
+  const options = [new Option('Markers…', '')];
+  editor.song.masterBars.forEach((b, i) => { if (b.marker) options.push(new Option(`${i + 1}: ${b.marker}`, String(i))); });
+  markers.replaceChildren(...options);
 }
 
 function renderTracks() {
@@ -643,7 +918,7 @@ function updateStatus() {
   const over = editor.barOverfull() ? '<span class="warn">bar too long</span>' : '';
   $('status').innerHTML = `
     <span>Bar ${c.bar + 1}/${editor.song.masterBars.length}</span>
-    <span>Beat ${c.beat + 1}/${editor.beats.length}</span>
+    <span>Beat ${c.beat + 1}/${editor.beats.length}${editor.selection ? ' · selection' : ''}</span>
     <span>${row}</span>
     <span>1/${beat.duration}${'.'.repeat(beat.dots)}${beat.tuplet ? ' (3)' : ''}</span>
     ${over}
@@ -681,4 +956,4 @@ initialFile().then((f) => f && loadFile(f));
 onOpenFile(loadFile);
 
 // Test/automation hook (no network, local only).
-(window as any).sixline = { get editor() { return editor; }, get docs() { return docs; }, get active() { return active; }, api, loadFile, closeDoc, get score() { return score; }, get rendering() { return rendering || renderQueued; }, get playerState() { return playerState; }, get playerPos() { return playerPos; } };
+(window as any).sixline = { get editor() { return editor; }, get docs() { return docs; }, get active() { return active; }, api, loadFile, closeDoc, get score() { return score; }, get rendering() { return rendering || renderQueued; }, get playerState() { return playerState; }, get playerPos() { return playerPos; }, get practice() { return active.practice; }, get countingIn() { return countIn.active; }, midiNoteOnType: at.midi.MidiEventType.NoteOn };

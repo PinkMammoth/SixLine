@@ -45,6 +45,16 @@ const TYPES: [TrackType, string][] = [
   ['drums', 'Drums'],
 ];
 
+export async function measureDialog(current: number, max: number) {
+  const r = await form('Go to measure', [{ name: 'measure', label: 'Measure', type: 'number', value: current, min: 1, max }]);
+  return r ? Number(r.measure) : null;
+}
+
+export async function markerDialog(current: string) {
+  const r = await form(current ? 'Rename section marker' : 'Add section marker', [{ name: 'marker', label: 'Label', type: 'text', value: current }]);
+  return r ? r.marker : null;
+}
+
 export async function newSongDialog() {
   const r = await form('New song', [
     { name: 'title', label: 'Title', type: 'text', value: 'Untitled' },
