@@ -17,6 +17,7 @@ import { PracticeState, CountIn, tempoAtBar, clampLoopTick } from './playback/pr
 import { Metronome, elapsedMs, type ClickBar } from './playback/metronome';
 import { bindDrumGrid, renderDrumGrid } from './ui/drumgrid';
 import { DRUM_BY_SHORTCUT, drumName } from './model/drums';
+import { bindDrumScore, renderDrumScore, updateDrumSelection, drumCaret } from './ui/drumscore';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -58,6 +59,15 @@ const metronome = new Metronome();
 let clickBars: ClickBar[] = [];
 let pendingAudio = false;
 let resumePlayback: { tick: number; playing: boolean } | null = null;
+type DrumMode = 'letters' | 'numbers';
+type DrumView = 'notation' | 'numbers';
+function preference(key: string, fallback: string) {
+  try { return localStorage.getItem(key) ?? fallback; } catch { return fallback; }
+}
+let drumInput: DrumMode = preference('sixline.drumInput', 'letters') === 'numbers' ? 'numbers' : 'letters';
+let drumView: DrumView = preference('sixline.drumView', 'notation') === 'numbers' ? 'numbers' : 'notation';
+let drumEntryTimer = 0;
+const numberScoreVisible = () => editor.track.type === 'drums' && drumView === 'numbers';
 
 // ------------------------------------------------------------------ alphaTab
 
@@ -88,6 +98,7 @@ api.renderFinished.on(() => {
     $('score').scrollTop = restoreScroll;
     restoreScroll = null;
   }
+  updateDrumView(true);
   updateCaret();
   updateStatus();
   if (renderQueued) flushRender();
@@ -96,7 +107,7 @@ api.playerStateChanged.on((e) => {
   playerState = e.state;
   if (e.state !== 1) metronome.cancel();
   else if (active.practice.metronome) metronome.update(clickBars, api.tickPosition, active.practice.speed, active.practice.looping ? active.practice.loop : null);
-  const mode = e.state === 1 ? at.ScrollMode.Continuous : at.ScrollMode.Off;
+  const mode = e.state === 1 && !numberScoreVisible() ? at.ScrollMode.Continuous : at.ScrollMode.Off;
   if (api.settings.player.scrollMode !== mode) {
     api.settings.player.scrollMode = mode;
     api.updateSettings();
@@ -112,6 +123,7 @@ api.playerPositionChanged.on((e) => {
     Object.assign(e, { currentTick: tick, currentTime: elapsedMs(clickBars, 0, tick, active.practice.speed) });
   }
   playerPos = { current: e.currentTime, end: e.endTime };
+  updateDrumPlayhead(tick);
   const seek = $<HTMLInputElement>('seek');
   if (seek && document.activeElement !== seek) {
     seek.max = String(e.endTime);
@@ -171,6 +183,7 @@ function activate(doc: Doc) {
   resumePlayback = null;
   active = doc;
   editor = doc.editor;
+  editor.clearDrumDigits();
   applyPractice();
   score = null;
   renderedTrack = -1;
@@ -287,6 +300,7 @@ function flushRender() {
   pendingAudio = false;
   if (track !== renderedTrack && !reset) restoreScroll = $('score').scrollTop;
   renderedTrack = track;
+  updateDrumView(true);
   rendering = true;
   api.renderScore(score!, [track], hints);
   renderTracks();
@@ -303,7 +317,7 @@ function updateCaret() {
   updateSelection();
   const el = $('caret');
   const beat = cursorBeat();
-  const box = beat && api.boundsLookup ? locateCaret(api.boundsLookup, beat, editor.track, editor.cursor.string) : null;
+  const box = numberScoreVisible() ? drumCaret($('drumscore'), editor) : beat && api.boundsLookup ? locateCaret(api.boundsLookup, beat, editor.track, editor.cursor.string) : null;
   if (!box) {
     el.style.display = 'none';
     return;
@@ -316,6 +330,7 @@ function updateCaret() {
 function updateSelection() {
   const el = $('selection');
   el.replaceChildren();
+  if (numberScoreVisible()) { updateDrumSelection($('drumscore'), editor); return; }
   const s = editor.selection;
   if (!s || s.track !== renderedTrack || !score || !api.boundsLookup) return;
   const { start, end } = selectionRange(editor.song, s);
@@ -344,6 +359,47 @@ function updateSelection() {
       Object.assign(box.style, { left: x + 'px', top: first.barBounds.visualBounds.y - 8 + 'px', width: Math.max(16, w) + 'px', height: last.barBounds.visualBounds.y + last.barBounds.visualBounds.h - first.barBounds.visualBounds.y + 16 + 'px' });
       el.appendChild(box);
       if (s.kind === 'measures') break;
+    }
+  }
+}
+
+function setDrumInput(mode: DrumMode) {
+  drumInput = mode;
+  docs.forEach(d => d.editor.clearDrumDigits());
+  try { localStorage.setItem('sixline.drumInput', mode); } catch { /* preferences are optional */ }
+  // Number entry immediately gives the readable score the user asked for; view remains independently selectable.
+  if (mode === 'numbers') setDrumView('numbers');
+  updateStatus();
+}
+function setDrumView(view: DrumView) {
+  drumView = view;
+  try { localStorage.setItem('sixline.drumView', view); } catch { /* preferences are optional */ }
+  updateDrumView(true);
+  updateCaret();
+  updateStatus();
+}
+function updateDrumView(redraw = false) {
+  const visible = numberScoreVisible();
+  $('sheet').classList.toggle('drum-numbers', visible);
+  $('drumscore').hidden = !visible;
+  $('at').setAttribute('aria-hidden', String(visible));
+  if (visible && redraw) renderDrumScore($('drumscore'), editor);
+  const mode = playerState === 1 && !visible ? at.ScrollMode.Continuous : at.ScrollMode.Off;
+  if (api.settings.player.scrollMode !== mode) { api.settings.player.scrollMode = mode; api.updateSettings(); }
+  updateDrumPlayhead(api.tickPosition);
+}
+function updateDrumPlayhead(tick: number) {
+  if (!numberScoreVisible()) return;
+  const el = $('drumscore');
+  const beat = api.tickCache?.findBeat(new Set([editor.cursor.track]), tick)?.beat;
+  const next = beat ? el.querySelector<HTMLElement>(`.drum-beat[data-bar="${beat.voice.bar.index}"][data-beat="${beat.index}"][data-voice="${beat.voice.index}"]`) : null;
+  el.querySelectorAll('.playing').forEach(n => { if (n !== next) n.classList.remove('playing'); });
+  if (next) {
+    const changed = !next.classList.contains('playing');
+    next.classList.add('playing');
+    if (playerState === 1 && changed) {
+      const r = next.getBoundingClientRect(), origin = $('sheet').getBoundingClientRect();
+      scrollIntoView({ x: r.left - origin.left, y: r.top - origin.top, w: r.width, h: r.height });
     }
   }
 }
@@ -641,7 +697,7 @@ window.addEventListener('keydown', (e) => {
   } else if (e.altKey && DUR_KEYS[k]) {
     editor.setDuration(DUR_KEYS[k]);
   } else if (k === ' ') playPause();
-  else if (editor.track.type === 'drums' && k.length === 1 && DRUM_BY_SHORTCUT.has(k.toLowerCase()) && !e.altKey) editor.togglePitch(DRUM_BY_SHORTCUT.get(k.toLowerCase())!.key);
+  else if (editor.track.type === 'drums' && drumInput === 'letters' && k.length === 1 && DRUM_BY_SHORTCUT.has(k.toLowerCase()) && !e.altKey) editor.togglePitch(DRUM_BY_SHORTCUT.get(k.toLowerCase())!.key);
   else if (editor.track.type === 'keys' && /^[a-gA-G]$/.test(k) && !e.altKey) editor.typeNoteName(k);
   else if (k === 'Enter') editor.toggleAtCursor();
   else if (k === 'ArrowUp' && e.shiftKey) editor.transposeNote(1);
@@ -656,14 +712,25 @@ window.addEventListener('keydown', (e) => {
   else if (k === 'End') editor.setCursor({ beat: editor.beats.length - 1 });
   else if (k === 'PageDown') editor.moveBar(1);
   else if (k === 'PageUp') editor.moveBar(-1);
-  else if (/^[0-9]$/.test(k)) editor.typeDigit(Number(k));
+  else if (/^[0-9]$/.test(k)) {
+    if (editor.track.type === 'drums' && drumInput === 'numbers') {
+      clearTimeout(drumEntryTimer);
+      command(() => editor.typeDrumDigit(Number(k)));
+      if (editor.drumDigits) {
+        const ed = editor;
+        drumEntryTimer = window.setTimeout(() => { ed.clearDrumDigits(); ed.emitCursor(); }, 2000);
+      }
+    }
+    else editor.typeDigit(Number(k));
+  }
+  else if ((k === 'Delete' || k === 'Backspace') && editor.drumDigits) { editor.clearDrumDigits(); updateStatus(); }
   else if (k === 'Delete' || k === 'Backspace') editor.deleteNote();
   else if (k === 'Insert') editor.insertBeat();
   else if (k === '+' || k === '=') editor.stepDuration(1);
   else if (k === '-' || k === '_') editor.stepDuration(-1);
   else if (k === '.') editor.toggleDot();
   else if (k === 'T' || (k === 't' && isStringed(editor.track))) editor.toggleTriplet();
-  else if (k === 'Escape') { editor.clearSelection(); closeMenus(); }
+  else if (k === 'Escape') { editor.clearDrumDigits(); editor.clearSelection(); closeMenus(); }
   else if (k === 'F6') editTrack();
   else handled = false;
   if (handled) e.preventDefault();
@@ -777,7 +844,13 @@ function buildToolbar() {
     <button id="b-undo" title="Undo (Ctrl+Z)">↶</button>
     <button id="b-redo" title="Redo (Ctrl+Y)">↷</button>
     <span class="sep"></span>
-    <span id="trackname" class="lbl"></span>`;
+    <span id="trackname" class="lbl"></span>
+    <span id="drum-controls" hidden>
+      <label>Drum input <select id="drum-input" aria-label="Drum input"><option value="letters">Letters (H, S, K…)</option><option value="numbers">MIDI numbers</option></select></label>
+      <label>View <select id="drum-view" aria-label="Drum score view"><option value="notation">Notation</option><option value="numbers">MIDI numbers</option></select></label>
+    </span>`;
+  $<HTMLSelectElement>('drum-input').onchange = () => { setDrumInput($<HTMLSelectElement>('drum-input').value as DrumMode); $('drum-input').blur(); };
+  $<HTMLSelectElement>('drum-view').onchange = () => { setDrumView($<HTMLSelectElement>('drum-view').value as DrumView); $('drum-view').blur(); };
   const practice = document.createElement('div');
   practice.id = 'practicebar';
   practice.innerHTML = `<button id="b-caret" title="Play from caret / selection (Ctrl+Space)">Play here</button>
@@ -844,6 +917,9 @@ function updateToolbar() {
   const mb = editor.song.masterBars[editor.cursor.bar];
   $('tsig').textContent = `${mb.num}/${mb.den}`;
   $('trackname').textContent = editor.track.name;
+  $('drum-controls').hidden = editor.track.type !== 'drums';
+  $<HTMLSelectElement>('drum-input').value = drumInput;
+  $<HTMLSelectElement>('drum-view').value = drumView;
   const beat = editor.beat;
   document.querySelectorAll<HTMLButtonElement>('[data-dur]').forEach((b) => b.classList.toggle('on', Number(b.dataset.dur) === beat.duration));
   $('b-dot').classList.toggle('on', beat.dots > 0);
@@ -912,9 +988,9 @@ function updateStatus() {
   const row = isStringed(tr)
     ? `String ${c.string + 1}${note ? ` fret ${note.fret}` : ''}`
     : tr.type === 'drums'
-      ? `${drumName(editor.rowPitch())}${note ? ' ●' : ''}`
+      ? `${editor.rowPitch()} ${drumName(editor.rowPitch())}${note ? ' ●' : ''}${editor.drumDigits ? ` · Entering ${editor.drumDigits}_` : ''}`
       : `Pitch ${pitchName(editor.rowPitch())}${note ? ' ●' : ''}`;
-  renderDrumGrid($('drumgrid'), editor);
+  renderDrumGrid($('drumgrid'), editor, drumInput === 'numbers');
   const over = editor.barOverfull() ? '<span class="warn">bar too long</span>' : '';
   $('status').innerHTML = `
     <span>Bar ${c.bar + 1}/${editor.song.masterBars.length}</span>
@@ -948,6 +1024,7 @@ window.addEventListener('beforeunload', (e) => {
 renderTabs();
 
 bindDrumGrid($('drumgrid'), () => editor);
+bindDrumScore($('drumscore'), () => editor);
 
 renderTracks();
 updateStatus();

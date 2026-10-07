@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import { parseMidi } from 'midi-file';
 import { workflows } from './workflows.mjs';
+import { drumWorkflows } from './drums.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const out = path.join(root, 'e2e/out');
@@ -42,7 +43,7 @@ async function launch(file) {
 
 /** Wait until the document is loaded and alphaTab has finished rendering. */
 async function waitIdle(win, timeout = 30000) {
-  await win.waitForFunction(() => window.sixline?.score && !window.sixline.rendering && document.querySelector('#at .at-surface *'), null, { timeout });
+  await win.waitForFunction(() => window.sixline?.score && !window.sixline.rendering && (document.querySelector('#drumscore:not([hidden]) .drum-beat') || document.querySelector('#at .at-surface *')), null, { timeout });
   await win.waitForTimeout(150);
   await win.waitForFunction(() => !window.sixline.rendering, null, { timeout });
 }
@@ -821,5 +822,6 @@ if (fs.existsSync(big)) {
 }
 
 await workflows({launch,closeApp,step,waitIdle,root,out,tabPoint});
+await drumWorkflows({launch,closeApp,step,waitIdle,out,root});
 console.log(failures ? `\n${failures} FAILED` : '\nall e2e checks passed');
 process.exit(failures ? 1 : 0);

@@ -53,6 +53,30 @@ button, select, input { font: inherit; }
 .at-cursor-beat { background: rgba(64, 64, 255, 0.75); width: 3px; }
 .at-highlight * { fill: #0078ff; stroke: #0078ff; }
 
+#drum-controls:not([hidden]) { display: inline-flex; align-items: center; gap: 8px; margin-left: 8px; }
+#drum-controls label { white-space: nowrap; }
+.drum-numbers { overflow: hidden; }
+/* alphaTab sets position:relative inline for its cursor; the alternative view owns sheet height. */
+.drum-numbers #at { opacity: 0; position: absolute !important; top: 0; width: 100%; pointer-events: none; }
+#drumscore { padding: 20px 28px 48px; }
+#drumscore h2 { margin: 0 0 6px; font-size: 18px; font-weight: 500; }
+.drum-score-help { color: #555; margin: 0 0 22px; font-size: 11px; }
+.drum-bars { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 20px 0; }
+.drum-bar { flex: 1 1 220px; min-width: 0; max-width: 100%; border-left: 1px solid #555; border-right: 1px solid #555; padding: 0 7px 4px; }
+.drum-bar-label { color: #666; font-size: 10px; padding: 0 0 7px; }
+.drum-marker { display: block; font-size: 12px; margin-bottom: 6px; }
+.drum-voice { display: flex; align-items: stretch; min-height: 70px; }
+.drum-voice.secondary { margin-top: 8px; opacity: .65; cursor: default; }
+.drum-beat { flex: none; position: relative; text-align: center; padding: 3px 0; cursor: default; }
+.drum-chord { height: calc(var(--drum-rows) * 17px); display: flex; flex-direction: column; align-items: center; background: repeating-linear-gradient(to bottom, transparent 0 10px, #ddd 10px 11px, transparent 11px 17px); }
+.drum-number { font: 13px/17px monospace; padding: 0 2px; background: #fff; z-index: 1; }
+.drum-number.ghost { color: #888; }
+.drum-number.accent { font-weight: bold; }
+.drum-rest { color: #888; line-height: 17px; background: #fff; padding: 0 2px; }
+.drum-duration { display: block; color: #666; font-size: 9px; margin-top: 4px; }
+.drum-beat.selected, .drum-number.selected { background-color: rgba(58,106,212,.15); outline: 1px solid rgba(58,106,212,.5); }
+.drum-beat.playing { box-shadow: inset 3px 0 #0078ff; background-color: rgba(255,242,0,.18); }
+
 #status { display: flex; gap: 14px; padding: 2px 8px; border-top: 1px solid #c8c8c8; background: #ececec; height: 20px; white-space: nowrap; }
 #status .warn { color: #b00; }
 

@@ -3,7 +3,7 @@
 import type { Editor } from '../editor/editor';
 import { DRUM_KIT, drumName } from '../model/drums';
 
-export function renderDrumGrid(el: HTMLElement, editor: Editor) {
+export function renderDrumGrid(el: HTMLElement, editor: Editor, numbers = false) {
   const t = editor.track;
   if (t.type !== 'drums') {
     el.style.display = 'none';
@@ -20,7 +20,7 @@ export function renderDrumGrid(el: HTMLElement, editor: Editor) {
   let html = `<table><tr><th>Bar ${c.bar + 1}</th>${beats.map((b, i) => `<th class="${i === c.beat ? 'cur' : ''}">${dur(b)}</th>`).join('')}</tr>`;
   for (const r of rows) {
     const curRow = r.row === c.string;
-    html += `<tr class="${curRow ? 'cur' : ''}"><th title="GM ${r.key}">${r.name}${r.shortcut ? ` <kbd>${r.shortcut.toUpperCase()}</kbd>` : ''}</th>`;
+    html += `<tr class="${curRow ? 'cur' : ''}"><th title="GM ${r.key}">${numbers ? `<kbd>${r.key}</kbd> ` : ''}${r.name}${!numbers && r.shortcut ? ` <kbd>${r.shortcut.toUpperCase()}</kbd>` : ''}</th>`;
     beats.forEach((b, i) => {
       const on = b.notes.some((n) => n.pitch === r.key);
       html += `<td data-beat="${i}" data-key="${r.key}" class="${on ? 'on' : ''}${curRow && i === c.beat ? ' caret' : ''}${i === c.beat ? ' col' : ''}"></td>`;

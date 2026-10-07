@@ -82,6 +82,12 @@ npm run test:e2e  # builds, then drives the real Electron app with Playwright
 
 A grid of the current bar appears under the score: rows are kit pieces, columns are beats. Click a cell to toggle it. The data is ordinary beats with General MIDI percussion notes.
 
+Use **Drum input → MIDI numbers** to enter a hit by typing its two-digit GM number (for example `38` snare or `42` closed hi-hat). Each complete number toggles that instrument on the current beat as one undo action; enter several numbers to build a chord. Use Left/Right to move between beats. Incomplete entry expires after two seconds; Escape/Backspace cancels it. Invalid numbers leave the music unchanged. All standard GM drum numbers, **35–81**, are supported.
+
+Number entry opens the **MIDI numbers** score view: hits appear as stacked numbers on bar lines, with readable `1/4`, `1/8` etc. duration labels and dashes for rests. Click a number to select its instrument, Delete to remove it, Shift-click to extend a passage, or Ctrl-click to select that instrument inside a range. Secondary voices remain visible and read only. **View → Notation** returns to traditional drum notation. Input and view choices are independent, persist on this desktop, and do not change the song, exported MIDI or playback position. Letter input can also be used with the numbered view.
+
+Common GM keys: `35` acoustic kick, `36` kick, `38` snare, `40` electric snare, `42` closed hat, `44` pedal hat, `46` open hat, `41/43` floor toms, `45/47/48/50` toms, `49/57` crashes, `51` ride, `52` china, `53` ride bell, `55` splash, **`56` cowbell**. These follow the General MIDI percussion map; see the standard rhythm set on page 12 of [Roland's MIDI implementation](https://static.roland.com/assets/media/pdf/FP-90_FP-60_MIDI_Imple_eng02_W.pdf#page=12).
+
 | Key | Action |
 | --- | --- |
 | K S H O P C R B T M L F X | kick, snare, closed hat, open hat, pedal hat, crash, ride, ride bell, high/mid/low/floor tom, side stick (toggle on the current beat) |

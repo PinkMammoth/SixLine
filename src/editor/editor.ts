@@ -55,6 +55,9 @@ export class Editor {
   private cursorListeners: (() => void)[] = [];
   /** Last typed digit, for multi-digit fret entry. */
   private pendingDigit: { at: string; value: number; time: number } | null = null;
+  private pendingDrumDigit: { at: string; value: number; time: number } | null = null;
+  get drumDigits() { return this.pendingDrumDigit ? String(this.pendingDrumDigit.value) : ''; }
+  clearDrumDigits() { this.pendingDrumDigit = null; }
 
   constructor(public song: Song) {
     if (song.tracks[0]) this.cursor.string = this.defaultRow(song.tracks[0]);
@@ -68,6 +71,7 @@ export class Editor {
   }
 
   load(song: Song) {
+    this.clearDrumDigits();
     this.song = song;
     this.undoStack = [];
     this.redoStack = [];
@@ -128,6 +132,7 @@ export class Editor {
    * merge=true folds this edit into the previous undo entry (used for multi-digit fret entry).
    */
   edit(label: string, scope: 'measure' | 'song', fn: (song: Song) => void, opts: { merge?: boolean; firstBar?: number; audio?: boolean } = {}) {
+    this.clearDrumDigits();
     const sc: Scope = scope === 'song' ? { kind: 'song' } : { kind: 'measure', track: this.cursor.track, bar: this.cursor.bar };
     const cursorBefore = { ...this.cursor };
     const selectionBefore = clone(this.selection);
@@ -149,8 +154,10 @@ export class Editor {
   }
 
   undo() {
+    const partial = this.drumDigits;
+    this.clearDrumDigits();
     const e = this.undoStack.pop();
-    if (!e) return;
+    if (!e) { if (partial) this.emitCursor(); return; }
     this.restore(e.scope, e.before);
     this.cursor = { ...e.cursorBefore };
     this.selection = clone(e.selectionBefore);
@@ -159,8 +166,10 @@ export class Editor {
   }
 
   redo() {
+    const partial = this.drumDigits;
+    this.clearDrumDigits();
     const e = this.redoStack.pop();
-    if (!e) return;
+    if (!e) { if (partial) this.emitCursor(); return; }
     this.restore(e.scope, e.after);
     this.cursor = { ...e.cursorAfter };
     this.selection = clone(e.selectionAfter);
@@ -169,6 +178,7 @@ export class Editor {
   }
 
   private afterHistory(e: Entry) {
+    this.clearDrumDigits();
     this.dirty = true;
     this.pendingDigit = null;
     this.clampCursor();
@@ -219,6 +229,7 @@ export class Editor {
   }
 
   setCursor(c: Partial<Cursor>, extend = false, kind: Selection['kind'] = 'beats') {
+    this.clearDrumDigits();
     const from = this.track;
     const anchor = this.selection?.anchor ?? { bar: this.cursor.bar, beat: this.cursor.beat };
     const originalTrack = this.cursor.track;
@@ -399,6 +410,24 @@ export class Editor {
 
   // ------------------------------------------------------------ note editing
 
+  /** Two-digit GM entry is atomic: the first digit never changes the song or undo history. */
+  typeDrumDigit(d: number, now = performance.now()) {
+    if (this.track.type !== 'drums' || !Number.isInteger(d) || d < 0 || d > 9) return;
+    const p = this.pendingDrumDigit;
+    if (!p || p.at !== posKey(this.cursor) || now - p.time >= 2000) {
+      this.pendingDrumDigit = { at: posKey(this.cursor), value: d, time: now };
+      this.emitCursor();
+      return;
+    }
+    this.clearDrumDigits();
+    const pitch = p.value * 10 + d;
+    if (pitch < 35 || pitch > 81) {
+      this.emitCursor();
+      throw new Error('Use a General MIDI drum number from 35 to 81 (for example 38 snare, 42 hi-hat, 56 cowbell).');
+    }
+    this.togglePitch(pitch);
+  }
+
   /** Type a digit: enters a fret; a second digit within the window forms a multi-digit fret (e.g. 1,2 -> 12). */
   typeDigit(d: number, now = performance.now()) {
     if (!isStringed(this.track)) return;
@@ -437,6 +466,7 @@ export class Editor {
   /** Toggle a drum/keys pitch at the cursor beat and move the row cursor to it. */
   togglePitch(pitch: number) {
     if (isStringed(this.track)) return;
+    this.clearDrumDigits();
     this.edit(`Note ${pitch}`, 'measure', () => {
       const b = this.beat;
       const i = b.notes.findIndex((n) => n.pitch === pitch);
