@@ -92,7 +92,7 @@ console.log('Install');
 await step('installer exists and carries SixLine version info', async () => {
   assert.ok(fs.existsSync(installer), installer);
   const info = ps(`(Get-Item '${installer}').VersionInfo.ProductName + '|' + (Get-Item '${installer}').VersionInfo.ProductVersion`);
-  assert.match(info, /^SixLine\|0\.1\.0/);
+  assert.match(info, new RegExp(`^SixLine\\|${version.replace(/\./g, '\\.')}(?:\\.0)?$`));
 });
 await step('silent install (per user) creates app, Start Menu entry, uninstaller and .tabproj association', async () => {
   killAll();
@@ -104,9 +104,9 @@ await step('silent install (per user) creates app, Start Menu entry, uninstaller
   assert.ok(fs.existsSync(startMenu), startMenu);
   assert.ok(!fs.existsSync(path.join(os.homedir(), 'Desktop', 'SixLine.lnk')), 'silent install declines the desktop shortcut');
   const exeInfo = ps(`(Get-Item '${installedExe}').VersionInfo.FileDescription + '|' + (Get-Item '${installedExe}').VersionInfo.FileVersion`);
-  assert.equal(exeInfo, 'SixLine|0.1.0');
+  assert.equal(exeInfo, `SixLine|${version}`);
   const uninstall = ps(`Get-ChildItem HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall | ForEach-Object { Get-ItemProperty $_.PSPath } | Where-Object { $_.DisplayName -like 'SixLine*' } | ForEach-Object { $_.DisplayName + '|' + $_.DisplayVersion }`);
-  assert.match(uninstall, /SixLine 0\.1\.0\|0\.1\.0/);
+  assert.equal(uninstall, `SixLine ${version}|${version}`);
   const assoc = ps(`(Get-ItemProperty 'HKCU:\\Software\\Classes\\.tabproj').'(default)'`);
   assert.ok(assoc, '.tabproj registered');
   const cmd = ps(`(Get-ItemProperty 'HKCU:\\Software\\Classes\\${assoc}\\shell\\open\\command').'(default)'`);
@@ -125,6 +125,7 @@ let edited = null;
     assert.equal(await win.evaluate(() => location.protocol), 'app:');
     assert.equal(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.isDevToolsOpened()), false);
     assert.equal(await app.evaluate(({ app }) => app.isPackaged), true);
+    assert.equal(await app.evaluate(({ app }) => app.getVersion()), version);
   });
   await step('2. new song', async () => {
     await win.keyboard.press('Control+n');
@@ -136,6 +137,45 @@ let edited = null;
     await win.keyboard.press('5');
     await waitIdle(win);
     assert.equal(await win.evaluate(() => window.sixline.editor.noteAtCursor()?.fret), 5);
+  });
+  await step('vertical chord entry, techniques, undo/redo and native reopen work in the installed app', async () => {
+    const before = await win.evaluate(() => structuredClone(window.sixline.editor.beat));
+    await win.keyboard.press('q');
+    for (const fret of [0, 1, 0, 2, 3]) {
+      await win.keyboard.type(String(fret));
+      await win.keyboard.press('Tab');
+    }
+    await win.keyboard.press('x');
+    await waitIdle(win);
+    assert.deepEqual(await win.evaluate(() => window.sixline.editor.beat.notes.map(n => [n.string, n.fret])), [[0,0],[1,1],[2,0],[3,2],[4,3]]);
+    await win.keyboard.press('Control+z'); await waitIdle(win);
+    assert.deepEqual(await win.evaluate(() => window.sixline.editor.beat), before);
+    await win.keyboard.press('Control+y'); await waitIdle(win);
+    assert.equal(await win.evaluate(() => window.sixline.editor.cursor.string), 4);
+    await win.keyboard.press('p');
+    await win.keyboard.press('v');
+    await win.keyboard.press('b');
+    await win.waitForSelector('dialog[open]');
+    await win.selectOption('#f-amount', '2');
+    await win.click('dialog button[value=ok]');
+    // Native dialog closing resolves asynchronously; wait for the edit before waiting for rendering.
+    await win.waitForFunction(() => window.sixline.editor.noteAtCursor()?.fx?.bend?.some(p => p.value === 2));
+    await waitIdle(win);
+    const rendered = await win.evaluate(() => {
+      const n = window.sixline.score.tracks[0].staves[0].bars[0].voices[0].beats[0].notes.find(n => n.string === 2);
+      return { mute: n.isPalmMute, vibrato: n.vibrato, bend: n.maxBendPoint?.value };
+    });
+    assert.deepEqual(rendered, {mute:true,vibrato:1,bend:2});
+    const song = await win.evaluate(() => structuredClone(window.sixline.editor.song));
+    const file = path.join(work, 'composition.tabproj');
+    await stub(app, 'save', file);
+    await win.keyboard.press('Control+Shift+s');
+    await win.waitForFunction(() => !window.sixline.editor.dirty);
+    assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')).song, song);
+    await win.keyboard.press('Control+w');
+    await stub(app, 'open', file); await win.keyboard.press('Control+o');
+    await win.waitForFunction(file => window.sixline.active.filePath === file, file); await waitIdle(win);
+    assert.deepEqual(await win.evaluate(() => window.sixline.editor.song), song);
   });
   await step(`3. open ${path.basename(gp)}`, async () => {
     await stub(app, 'open', gp);

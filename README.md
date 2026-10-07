@@ -12,6 +12,8 @@ npx electron . path/to/song.gp5   # open a file directly (after a build)
 
 ## Windows build
 
+The [v0.3.0 release report](docs/release-0.3.0.md) records the latest installer/portable build, checksums and installed-Windows verification.
+
 ```sh
 npm run dist      # build the frontend + package Windows x64
 npm run release   # unit tests + e2e + dist + packaged-app verification (the full pre-release check)
