@@ -597,13 +597,11 @@ async function editTrack(i = editor.cursor.track) {
   const old = editor.song.tracks[i];
   const r = await trackDialog(old);
   if (!r) return;
-  if (r.type !== old.type) {
-    // the dialog's tuning/capo/program fields belong to the old type
-    const dropped = editor.setTrackType(i, r.type);
-    const { tuning: _t, capo: _c, program, ...rest } = r.props;
-    editor.setTrackProps(i, old.type !== 'drums' && r.type !== 'drums' && program !== undefined ? { ...rest, program } : rest);
-    setMessage(`Converted "${old.name}" to ${r.type}` + (dropped ? `; ${dropped} note(s) could not be placed on the tuning and were removed (Ctrl+Z restores)` : ''));
-  } else editor.setTrackProps(i, r.props);
+  command(() => {
+    const dropped = editor.configureTrack(i, r.type, r.props);
+    if (r.type !== old.type) setMessage(`Converted "${old.name}" to ${r.type}` + (dropped ? `; ${dropped} note(s) could not be placed on the tuning and were removed (Ctrl+Z restores)` : ''));
+    else if (dropped) setMessage(`${dropped} note(s) removed by the string change (Ctrl+Z restores)`);
+  });
 }
 
 async function editTimeSignature() {
@@ -801,7 +799,7 @@ window.addEventListener('keydown', (e) => {
   else if (isStringed(editor.track) && editor.chordEntry && k.toLowerCase() === 'x') command(() => editor.muteChordString());
   else if (isStringed(editor.track) && editor.chordEntry && (k === 'Tab' || k === 'Enter')) editor.advanceChordString(e.shiftKey ? -1 : 1);
   else if (editor.track.type === 'drums' && drumInput === 'letters' && k.length === 1 && DRUM_BY_SHORTCUT.has(k.toLowerCase()) && !e.altKey) editor.togglePitch(DRUM_BY_SHORTCUT.get(k.toLowerCase())!.key);
-  else if (editor.track.type === 'keys' && /^[a-gA-G]$/.test(k) && !e.altKey) editor.typeNoteName(k);
+  else if (editor.track.type === 'keys' && !isStringed(editor.track) && /^[a-gA-G]$/.test(k) && !e.altKey) editor.typeNoteName(k);
   else if (k === 'Enter') editor.toggleAtCursor();
   else if (k === 'ArrowUp' && e.shiftKey) { if (isStringed(editor.track)) command(() => editor.transformFrets(1)); else editor.transposeNote(1); }
   else if (k === 'ArrowDown' && e.shiftKey) { if (isStringed(editor.track)) command(() => editor.transformFrets(-1)); else editor.transposeNote(-1); }
@@ -1166,7 +1164,7 @@ function updateStatus() {
   const beat = editor.beat;
   const note = editor.noteAtCursor();
   const row = isStringed(tr)
-    ? `String ${c.string + 1}${note ? ` fret ${note.fret}` : ''}${editor.fretDigits ? ` · Entering ${editor.fretDigits}_ (finish fret or Escape)` : ''}`
+    ? `String ${c.string + 1} (${pitchName(tr.tuning[c.string])})${note ? ` fret ${note.fret}` : ''}${editor.fretDigits ? ` · Entering ${editor.fretDigits}_ (finish fret or Escape)` : ''}`
     : tr.type === 'drums'
       ? `${editor.rowPitch()} ${drumName(editor.rowPitch())}${note ? ' ●' : ''}${editor.drumDigits ? ` · Entering ${editor.drumDigits}_` : ''}`
       : `Pitch ${pitchName(editor.rowPitch())}${note ? ' ●' : ''}`;

@@ -1,5 +1,6 @@
 import type { Cursor, Editor } from '../editor/editor';
 import type { Position, Selection } from '../editor/selection';
+import { isStringed } from '../model/song';
 
 /** Anchor and granularity stay fixed throughout a drag, including reversing across score rows. */
 export class ScoreDrag {
@@ -85,7 +86,7 @@ export function bindScoreSelection({surface,scroller,getEditor,hitTest,choosePla
     choosePlayback();
     editor.setCursor(hit,extend,extend ? previous?.kind ?? 'beats' : 'beats');
     if (modifier) {
-      editor.toggleSelectionRow(editor.track.type === 'guitar' || editor.track.type === 'bass' ? hit.string : editor.rowPitch(),previous);
+      editor.toggleSelectionRow(isStringed(editor.track) ? hit.string : editor.rowPitch(),previous);
       gesture.drag.rows = editor.selection?.rows;
       gesture.drag.anchor = editor.selection?.anchor ?? anchor;
     }

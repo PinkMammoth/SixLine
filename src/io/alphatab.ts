@@ -2,6 +2,7 @@
 // alphaTab is used for GP3/4/5 parsing, engraving, and synth playback; it never owns the document.
 import * as at from '@coderline/alphatab';
 import './alphatabPatches';
+import { isStringed } from '../model/song';
 import type { Beat, Duration, MasterBar, Note, NoteEffects, HarmonicType, Song, Track, TrackType } from '../model/song';
 import { barTicks, ticksToDurations } from '../model/rhythm';
 
@@ -47,7 +48,7 @@ export function scoreToSong(score: at.model.Score): Song {
   const tracks: Track[] = score.tracks.map((t) => {
     const type = classify(t);
     const st = t.staves[0];
-    const stringed = type === 'guitar' || type === 'bass';
+    const stringed = type === 'guitar' || type === 'bass' || type === 'keys' && st.showTablature && st.tuning.length > 0;
     const n = st.tuning.length;
     const measures = st.bars.map((bar, bi) => {
       const voices: Beat[][] = [];
@@ -159,12 +160,12 @@ export function songToScore(song: Song, settings: at.Settings): at.model.Score {
     t.playbackInfo.isSolo = tr.solo;
     const st = new m.Staff();
     t.addStaff(st);
-    const stringed = tr.type === 'guitar' || tr.type === 'bass';
+    const stringed = isStringed(tr);
     st.isPercussion = tr.type === 'drums';
     if (stringed) {
       st.stringTuning.tunings = [...tr.tuning];
       st.capo = tr.capo;
-      st.displayTranspositionPitch = -12;
+      st.displayTranspositionPitch = tr.type === 'keys' ? 0 : -12;
     }
     st.showTablature = stringed;
     st.showStandardNotation = true;

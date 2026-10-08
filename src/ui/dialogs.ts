@@ -1,7 +1,7 @@
 // Small modal forms built on <dialog>. Enter = OK, Esc = cancel.
-import { type Track, type TrackType, type NoteEffects } from '../model/song';
+import { createTrack, DEFAULT_PROGRAMS, type Track, type TrackType, type NoteEffects } from '../model/song';
 import { GM_PROGRAMS } from '../model/gm';
-import { TUNING_PRESETS } from '../model/tunings';
+import { TUNING_PRESETS, presetsFor, resizeTuning, stringCounts } from '../model/tunings';
 export { TUNING_PRESETS };
 
 type Field =
@@ -9,7 +9,7 @@ type Field =
   | { name: string; label: string; type: 'number'; value: number; min?: number; max?: number; step?: number | 'any' }
   | { name: string; label: string; type: 'select'; value: string; options: [string, string][] };
 
-function form(title: string, fields: Field[], onInput?: (f: HTMLFormElement) => void): Promise<Record<string, string> | null> {
+function form(title: string, fields: Field[], onInput?: (f: HTMLFormElement, target?: HTMLElement) => void): Promise<Record<string, string> | null> {
   return new Promise((resolve) => {
     const dlg = document.createElement('dialog');
     const rows = fields
@@ -25,7 +25,10 @@ function form(title: string, fields: Field[], onInput?: (f: HTMLFormElement) => 
     dlg.querySelector('h3')!.textContent = title;
     const f = dlg.querySelector('form')!;
     f.querySelector<HTMLButtonElement>('button[value=cancel]')!.onclick = () => dlg.close('cancel');
-    if (onInput) f.addEventListener('input', () => onInput(f));
+    if (onInput) {
+      onInput(f);
+      f.addEventListener('input', e => onInput(f, e.target as HTMLElement));
+    }
     dlg.addEventListener('close', () => {
       const ok = dlg.returnValue === 'ok';
       const data = ok ? Object.fromEntries(new FormData(f).entries()) as Record<string, string> : null;
@@ -118,50 +121,100 @@ export async function timeSignatureDialog(num: number, den: number) {
 const NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 export const pitchName = (p: number) => NAMES[p % 12] + (Math.floor(p / 12) - 1);
 export function parsePitch(s: string): number | null {
-  const m = /^([A-Ga-g])([#b]?)(-?\d)$/.exec(s.trim());
+  const m = /^([A-Ga-g])([#b]?)(-?\d+)$/.exec(s.trim());
   if (!m) return null;
   let pc = NAMES.indexOf(m[1].toUpperCase());
   if (m[2] === '#') pc++;
   if (m[2] === 'b') pc--;
-  return (Number(m[3]) + 1) * 12 + pc;
+  const pitch = (Number(m[3]) + 1) * 12 + pc;
+  return Number.isInteger(pitch) && pitch >= 0 && pitch <= 127 ? pitch : null;
 }
 export const formatTuning = (t: number[]) => t.map(pitchName).join(' ');
 export function parseTuning(s: string): number[] | null {
   const parts = s.trim().split(/[\s,]+/).filter(Boolean);
   const out = parts.map(parsePitch);
-  return out.length >= 1 && out.length <= 10 && out.every((p) => p !== null) ? (out as number[]) : null;
+  return out.length >= 1 && out.length <= 8 && out.every((p) => p !== null) ? (out as number[]) : null;
 }
 
 
 export async function trackDialog(t: Track) {
-  const stringed = t.type === 'guitar' || t.type === 'bass';
   const fields: Field[] = [
     { name: 'name', label: 'Name', type: 'text', value: t.name },
     { name: 'type', label: 'Track type', type: 'select', value: t.type, options: TYPES },
   ];
-  if (t.type !== 'drums')
-    fields.push({ name: 'program', label: 'Instrument (GM)', type: 'select', value: String(t.program), options: GM_PROGRAMS.map((n, i) => [String(i), `${i} ${n}`]) });
-  if (stringed) {
-    fields.push({ name: 'preset', label: 'Tuning preset', type: 'select', value: '', options: [['', '(custom)'], ...Object.keys(TUNING_PRESETS).map((k) => [k, k] as [string, string])] });
-    fields.push({ name: 'tuning', label: 'Tuning (high → low)', type: 'text', value: formatTuning(t.tuning) });
-    fields.push({ name: 'capo', label: 'Capo', type: 'number', value: t.capo, min: 0, max: 24 });
-  }
+  fields.push({ name: 'program', label: 'Instrument (GM)', type: 'select', value: String(t.program), options: GM_PROGRAMS.map((n, i) => [String(i), `${i} ${n}`]) });
+  fields.push({ name: 'strings', label: 'Strings', type: 'select', value: String(t.tuning.length), options: [] });
+  fields.push({ name: 'preset', label: 'Tuning preset', type: 'select', value: '', options: [] });
+  fields.push({ name: 'tuning', label: 'Open notes (top → bottom)', type: 'text', value: formatTuning(t.tuning) });
+  fields.push({ name: 'capo', label: 'Capo', type: 'number', value: t.capo, min: 0, max: 24 });
   fields.push({ name: 'volume', label: 'Volume (0-16)', type: 'number', value: t.volume, min: 0, max: 16 });
   fields.push({ name: 'pan', label: 'Pan (0-16, 8 = centre)', type: 'number', value: t.pan, min: 0, max: 16 });
-  const r = await form('Track properties', fields, (f) => {
-    const preset = (f.elements.namedItem('preset') as HTMLSelectElement | null)?.value;
-    if (preset && document.activeElement?.id === 'f-preset') (f.elements.namedItem('tuning') as HTMLInputElement).value = formatTuning(TUNING_PRESETS[preset]);
+  let type = t.type, tuning = [...t.tuning];
+  const drafts = new Map<TrackType, number[]>([[t.type, tuning]]);
+  let rows: HTMLElement;
+  let notice: HTMLElement;
+  const r = await form('Track properties', fields, (f, target) => {
+    const count = f.elements.namedItem('strings') as HTMLSelectElement;
+    const preset = f.elements.namedItem('preset') as HTMLSelectElement;
+    const text = f.elements.namedItem('tuning') as HTMLInputElement;
+    const show = (name: string, visible: boolean) => {
+      const el = f.elements.namedItem(name) as HTMLInputElement;
+      el.disabled = !visible;
+      el.closest('label')!.hidden = !visible;
+    };
+    if (!rows) {
+      rows = document.createElement('div'); rows.className = 'tuning-strings';
+      notice = document.createElement('p'); notice.className = 'tuning-help';
+      text.closest('label')!.after(rows, notice);
+    }
+    if (target?.id === 'f-type') {
+      drafts.set(type, [...tuning]);
+      const next = (target as HTMLSelectElement).value as TrackType;
+      if (type === 'drums' && next !== 'drums') (f.elements.namedItem('program') as HTMLSelectElement).value = String(DEFAULT_PROGRAMS[next]);
+      type = next;
+      tuning = [...(drafts.get(type) ?? createTrack(type, 0).tuning)];
+    } else if (target?.id === 'f-strings') {
+      if (tuning.length) drafts.set(type, [...tuning]);
+      tuning = resizeTuning(type, tuning.length ? tuning : drafts.get(type) ?? [], Number(count.value));
+    } else if (target?.id === 'f-preset' && preset.value) {
+      tuning = [...TUNING_PRESETS[preset.value]];
+    } else if (target?.dataset.string !== undefined) {
+      tuning[Number(target.dataset.string)] = Number((target as HTMLSelectElement).value);
+    } else if (target?.id === 'f-tuning') {
+      const parsed = parseTuning(text.value);
+      const allowed = parsed && (stringCounts(type).includes(parsed.length) || type === t.type && parsed.length === t.tuning.length);
+      text.setCustomValidity(allowed ? '' : `Choose ${stringCounts(type).filter(n => n > 0).join(', ')} open notes from C-1 to G9 (for example E4 or Bb2).`);
+      if (!allowed) return;
+      tuning = parsed;
+    } else if (target) return;
+    const counts = stringCounts(type);
+    if (tuning.length && !counts.includes(tuning.length)) counts.push(tuning.length); // retain unusual imported instruments
+    count.replaceChildren(...counts.map(n => new Option(n ? `${n} strings` : 'Standard notation (no strings)', String(n))));
+    count.value = String(tuning.length);
+    preset.replaceChildren(new Option('Custom', ''), ...presetsFor(type).map(n => new Option(n, n)));
+    preset.value = presetsFor(type).find(n => TUNING_PRESETS[n].join() === tuning.join()) ?? '';
+    text.value = formatTuning(tuning); text.setCustomValidity('');
+    show('program', type !== 'drums'); show('strings', type !== 'drums');
+    show('preset', tuning.length > 0); show('tuning', tuning.length > 0); show('capo', tuning.length > 0);
+    rows.hidden = tuning.length === 0;
+    // Preserve focus while editing a single string; other changes rebuild the string list.
+    if (target?.dataset.string === undefined) rows.replaceChildren(...tuning.map((pitch, string) => {
+      const label = document.createElement('label'); label.textContent = `String ${string + 1}${string === 0 ? ' (top)' : ''}`;
+      const select = document.createElement('select'); select.id = `f-string-${string}`; select.dataset.string = String(string);
+      select.setAttribute('aria-label', `String ${string + 1} open note`);
+      select.replaceChildren(...Array.from({ length: 128 }, (_, p) => new Option(pitchName(p), String(p))));
+      select.value = String(pitch); label.appendChild(select); return label;
+    }));
+    const removed = type === t.type && tuning.length && t.tuning.length > tuning.length ? t.measures.flatMap(m => m.voices.flatMap(v => v.flatMap(b => b.notes))).filter(n => n.string !== undefined && n.string >= tuning.length).length : 0;
+    notice.textContent = removed ? `${removed} note${removed === 1 ? '' : 's'} on removed strings will be removed. Undo restores them.` : tuning.length ? 'Each open note includes its octave. Strings may repeat notes or use any pitch order.' : '';
+    notice.hidden = !notice.textContent;
   });
   if (!r) return null;
-  const type = r.type as TrackType;
   const out: Partial<Track> = { name: r.name || t.name, volume: clamp(Number(r.volume), 0, 16, t.volume), pan: clamp(Number(r.pan), 0, 16, t.pan) };
   if (r.program !== undefined) out.program = clamp(Number(r.program), 0, 127, t.program);
-  if (stringed) {
-    const tuning = parseTuning(r.tuning);
-    if (tuning) out.tuning = tuning;
-    out.capo = clamp(Number(r.capo), 0, 24, t.capo);
-  }
-  return { type, props: out };
+  out.tuning = [...tuning];
+  out.capo = tuning.length ? clamp(Number(r.capo), 0, 24, t.capo) : 0;
+  return { type: r.type as TrackType, props: out };
 }
 
 function clamp(v: number, lo: number, hi: number, dflt: number) {

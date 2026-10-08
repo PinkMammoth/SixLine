@@ -34,7 +34,7 @@ export interface Track {
   type: TrackType;
   /** GM program 0-127 (ignored for drums). */
   program: number;
-  /** MIDI note per string, index 0 = highest string (top tab line). Empty for keys/drums. */
+  /** MIDI note per open string, index 0 = top tab line. Empty for notation-only keys/drums. */
   tuning: number[];
   capo: number;
   /** 0-16, as Guitar Pro. */
@@ -65,7 +65,7 @@ export interface Beat {
 }
 
 export interface Note {
-  /** Stringed tracks: 0 = highest string. */
+  /** Stringed tracks: 0 = top tab line. */
   string?: number;
   fret?: number;
   /** Keys: MIDI pitch. Drums: GM percussion key. */
@@ -112,7 +112,7 @@ export const DEFAULT_PROGRAMS: Record<TrackType, number> = {
   drums: 0,
 };
 
-export const isStringed = (t: Track) => t.type === 'guitar' || t.type === 'bass';
+export const isStringed = (t: Track) => t.type === 'guitar' || t.type === 'bass' || t.type === 'keys' && t.tuning.length > 0;
 
 /** MIDI pitch of a note on a track (drum key for drums). */
 export function notePitch(track: Track, note: Note): number {

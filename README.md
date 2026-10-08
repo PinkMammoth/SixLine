@@ -78,7 +78,7 @@ npm run test:e2e  # builds, then drives the real Electron app with Playwright
 | Ctrl+W, Ctrl+Tab / Ctrl+Shift+Tab (or Ctrl+PgDn/PgUp) | close tab, next/previous tab |
 | Ctrl+I | import a Standard MIDI File (also via Open…) |
 | Ctrl+E | export Standard MIDI File (same generator as playback) |
-| F6 (or double-click a track) | track properties (name, MIDI program, tuning presets, capo, volume, pan) |
+| F6 (or double-click a track) | track properties (name, MIDI program, string count, per-string tuning, presets, capo, volume, pan) |
 
 ### Guitar and bass composition
 
@@ -130,7 +130,15 @@ Common GM keys: `35` acoustic kick, `36` kick, `38` snare, `40` electric snare, 
 | ↑/↓ then Enter | choose a kit row and toggle it |
 | Del | remove the piece on the cursor row |
 
-### Keys / synth tracks (standard notation only)
+### Custom tunings
+
+Open **Track properties** with F6 or double-click a track. Choose **6, 7 or 8 strings** for guitar, **4, 5 or 6 strings** for bass, or **1–8 strings** for a keys/synth track. Each string has its own open-note picker, including the octave, from C-1 to G9. You can also type all open notes into **Open notes (top → bottom)**, separated by spaces or commas (for example `E4 B3 G3 D3 A2 E2`). Sharps and flats are accepted. Repeated notes and any pitch order are supported; the first note always belongs to the top tab line.
+
+Presets fill the open-note choices, which you can then edit individually. Retuning keeps existing string/fret positions and changes their sounding pitches. Reducing the string count removes notes on the removed strings; the dialog shows the affected count, and one Undo restores the complete properties change. Tunings persist in native projects and determine playback and exported MIDI pitches. The MIDI instrument selection remains independent of the tuning.
+
+### Keys / synth tracks
+
+Keys/synth tracks start in **Standard notation (no strings)** mode. Choose a string count in Track properties to use notation plus tablature, fret entry and chord entry with your chosen synth sound. Switching between notation and strings preserves playable pitches and retained voices; notes outside the selected strings' range are reported, and Undo restores them. In notation mode, use these controls:
 
 | Key | Action |
 | --- | --- |

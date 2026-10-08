@@ -21,9 +21,9 @@ export function locateCaret(lookup: at.rendering.BoundsLookup, beat: at.model.Be
   if (!all || !all.length) return null;
   const x = all[0].onNotesX - 9;
   const w = 18;
-  if (isStringed(track) && track.tuning.length > 1) {
+  if (isStringed(track)) {
     const tab = all[all.length - 1].barBounds.visualBounds;
-    const spacing = tab.h / (track.tuning.length - 1);
+    const spacing = track.tuning.length > 1 ? tab.h / (track.tuning.length - 1) : 12;
     const h = Math.max(10, spacing);
     return { x, y: tab.y + string * spacing - h / 2, w, h, row: true };
   }

@@ -61,7 +61,7 @@ export function copyPassage(song: Song, s: Selection): Passage {
 
 export function assertCompatible(t: Track, p: Passage) {
   if (t.type !== p.type) throw new Error(`Cannot paste ${p.type} material into a ${t.type} track.`);
-  if (isStringed(t) && (t.capo !== p.capo || JSON.stringify(t.tuning) !== JSON.stringify(p.tuning)))
+  if (isStringed(t) !== (p.tuning.length > 0) || isStringed(t) && (t.capo !== p.capo || JSON.stringify(t.tuning) !== JSON.stringify(p.tuning)))
     throw new Error('Paste requires the same tuning and capo to preserve pitch and fingering.');
 }
 function rests(ticks: number): Beat[] {

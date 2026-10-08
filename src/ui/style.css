@@ -86,6 +86,10 @@ button, select, input { font: inherit; }
 dialog { border: 1px solid #888; padding: 10px 12px; font: inherit; }
 dialog h3 { margin: 0 0 8px; font-size: 13px; }
 dialog label { display: flex; justify-content: space-between; gap: 10px; margin: 4px 0; align-items: center; }
+dialog label[hidden], .tuning-strings[hidden] { display: none; }
+.tuning-strings { border-top: 1px solid #ddd; border-bottom: 1px solid #ddd; padding: 4px 0; }
+.tuning-strings select { width: 90px; }
+.tuning-help { max-width: 340px; color: #555; font-size: 11px; }
 dialog .buttons { display: flex; justify-content: flex-end; gap: 6px; margin-top: 10px; }
 
 #drumgrid { border-top: 1px solid #c8c8c8; background: #fafafa; max-height: 260px; overflow: auto; flex: none; }

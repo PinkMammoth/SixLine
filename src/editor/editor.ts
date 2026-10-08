@@ -4,6 +4,7 @@ import { createTrack, emptyMeasure, isStringed, notePitch, MAX_FRET, HarmonicTyp
 import { barTicks, beatTicks, voiceTicks } from '../model/rhythm';
 import { DRUM_KIT, SNARE_ROW } from '../model/drums';
 import { convertTrack } from '../model/convert';
+import { validateTuning } from '../model/tunings';
 import { copyPassage, pastePassage, insertPassage, tieOrigins, type Passage } from './clipboard';
 import { selectionRange, type Selection } from './selection';
 import { notePositions, nextOnString, requireTransition, relationships, repairRelationships, tidyFx, NATURAL_NODES, bendCurve, type NotePosition } from './techniques';
@@ -129,6 +130,7 @@ export class Editor {
   }
 
   private defaultRow(t: Track) {
+    if (isStringed(t)) return 0;
     if (t.type === 'drums') return SNARE_ROW;
     if (t.type === 'keys') return 127 - 60;
     return 0;
@@ -430,7 +432,7 @@ export class Editor {
   // ------------------------------------------------------------ note editing
 
   toggleChordEntry() {
-    if (!isStringed(this.track)) throw new Error('Chord entry is available on guitar and bass tracks.');
+    if (!isStringed(this.track)) throw new Error('Chord entry requires a track with strings.');
     this.chordEntry = !this.chordEntry;
     this.pendingDigit = null; this.chordSession = null;
     this.emitCursor();
@@ -457,7 +459,7 @@ export class Editor {
 
   /** Notes addressed by a technique command. Whole-measure selections include retained secondary voices. */
   techniqueNotes(chord = false): NotePosition[] {
-    if (!isStringed(this.track)) throw new Error('This command is available on guitar and bass tracks.');
+    if (!isStringed(this.track)) throw new Error('This command requires a track with strings.');
     const s = this.selection;
     let notes: NotePosition[];
     if (s && s.track === this.cursor.track) {
@@ -527,6 +529,7 @@ export class Editor {
         }
       }
       if (!Number.isInteger(n.fret) || n.fret! < 0 || n.fret! > MAX_FRET) throw new Error(`All resulting frets must be between 0 and ${MAX_FRET}.`);
+      if (notePitch(track, n) > 127) throw new Error('The resulting note exceeds the highest MIDI note (G9).');
     }
     for (const m of track.measures) for (const v of m.voices) for (const b of v) {
       if (new Set(b.notes.map(n => n.string)).size !== b.notes.length) throw new Error('Moving those notes would put two notes on the same string.');
@@ -594,8 +597,9 @@ export class Editor {
   }
 
   setFret(fret: number, merge = false) {
-    if (!isStringed(this.track)) throw new Error('Fret entry requires a guitar or bass track.');
+    if (!isStringed(this.track)) throw new Error('Fret entry requires a track with strings.');
     if (!Number.isInteger(fret) || fret < 0 || fret > MAX_FRET) throw new Error(`Fret must be between 0 and ${MAX_FRET}.`);
+    if (this.track.tuning[this.cursor.string] + this.track.capo + fret > 127) throw new Error('This fret exceeds the highest MIDI note (G9). Choose a lower fret or open-string note.');
     const s = this.cursor.string;
     const conflict = this.fretConflict(fret);
     if (conflict) throw new Error(conflict);
@@ -642,7 +646,7 @@ export class Editor {
 
   /** Keys: enter note name (a-g) in the octave nearest the cursor pitch. */
   typeNoteName(letter: string) {
-    if (this.track.type !== 'keys') return;
+    if (this.track.type !== 'keys' || isStringed(this.track)) return;
     const pc = { c: 0, d: 2, e: 4, f: 5, g: 7, a: 9, b: 11 }[letter.toLowerCase()];
     if (pc === undefined) return;
     const ref = this.rowPitch();
@@ -653,7 +657,7 @@ export class Editor {
 
   /** Keys: move the note under the cursor by `delta` semitones (cursor follows). */
   transposeNote(delta: number) {
-    if (this.track.type !== 'keys') return;
+    if (this.track.type !== 'keys' || isStringed(this.track)) return;
     const n = this.noteAtCursor();
     const to = (n?.pitch ?? 0) + delta;
     if (!n || to < 0 || to > 127 || this.beat.notes.some((x) => x.pitch === to)) return;
@@ -783,12 +787,36 @@ export class Editor {
 
   /** Update track properties. Changing the string count drops notes on removed strings. */
   setTrackProps(index: number, props: Partial<Pick<Track, 'name' | 'program' | 'tuning' | 'capo' | 'volume' | 'pan'>>) {
-    this.edit('Track properties', 'song', (s) => {
-      const t = s.tracks[index];
-      Object.assign(t, props);
-      if (props.tuning)
-        for (const m of t.measures) for (const v of m.voices) for (const b of v) b.notes = b.notes.filter((n) => n.string === undefined || n.string < t.tuning.length);
-    }, { audio: Object.keys(props).some(k => k !== 'name') });
+    return this.configureTrack(index, this.song.tracks[index].type, props);
+  }
+
+  /** One properties-dialog edit, including switching synths between notation and tab. */
+  configureTrack(index: number, type: TrackType, props: Partial<Pick<Track, 'name' | 'program' | 'tuning' | 'capo' | 'volume' | 'pan'>>) {
+    const src = this.song.tracks[index];
+    const tuning = props.tuning ?? (type === src.type ? src.tuning : createTrack(type, 0).tuning);
+    if (props.tuning !== undefined || type !== src.type) validateTuning(type, tuning);
+    const capo = type === 'drums' || !tuning.length ? 0 : props.capo ?? src.capo;
+    if (!Number.isInteger(capo) || capo < 0 || capo > 24) throw new Error('Capo must be between 0 and 24.');
+    const representationChanged = isStringed(src) !== isStringed({ ...src, type, tuning });
+    const converted = type !== src.type || representationChanged ? convertTrack(src, type, tuning, capo) : { track: clone(src), dropped: 0 };
+    const t = converted.track;
+    Object.assign(t, clone(props), { tuning: [...tuning], capo });
+    if (isStringed(t)) {
+      for (const m of t.measures) for (const v of m.voices) for (const b of v) {
+        const removed = b.notes.filter(n => n.string !== undefined && n.string >= tuning.length);
+        converted.dropped += removed.length;
+        b.notes = b.notes.filter(n => !removed.includes(n));
+        if (b.notes.some(n => notePitch(t, n) < 0 || notePitch(t, n) > 127))
+          throw new Error('This tuning or capo would put an existing note outside the MIDI range (C-1 to G9). Lower the open-string note, capo or fret.');
+      }
+    }
+    if (JSON.stringify(t) === JSON.stringify(src)) return 0;
+    this.edit('Track properties', 'song', s => {
+      s.tracks[index] = t;
+      if (index === this.cursor.track && (type !== src.type || representationChanged)) this.cursor.string = this.defaultRow(t);
+      if (representationChanged && this.selection?.track === index) this.selection = null;
+    }, { audio: type !== src.type || (['program', 'tuning', 'capo', 'volume', 'pan'] as const).some(k => JSON.stringify(t[k]) !== JSON.stringify(src[k])) });
+    return converted.dropped;
   }
 
   /** Change a track's type (pitches kept; guitar/bass get automatic fingering). Returns notes that could not be placed. */
