@@ -240,6 +240,36 @@ describe('markers and navigation', () => {
 });
 
 describe('practice timing', () => {
+  it('increases speed once per completed pass, caps at the target and resets on Stop', () => {
+    const p = new PracticeState(), range = { startTick: 3840, endTick: 11520 };
+    p.startProgressive({ firstBar: 2, lastBar: 3, startSpeed: 50, increment: 5, targetSpeed: 62 }, range);
+    expect(p.speed).toBe(50);
+    for (const speed of [55, 60, 62, 62]) { p.completePass(); expect(p.speed).toBe(speed); }
+    expect(p.completedPasses).toBe(4);
+    p.looping = false; p.completePass(); expect(p.completedPasses).toBe(4);
+    p.resetProgress(); expect(p.speed).toBe(50); expect(p.completedPasses).toBe(0);
+    p.clearLoop(); p.completePass(); expect(p.progressive).toBeNull(); expect(p.looping).toBe(false);
+  });
+  it('validates practice settings without changing an existing practice session', () => {
+    const p = new PracticeState(), range = { startTick: 0, endTick: 3840 };
+    const settings = { firstBar: 1, lastBar: 2, startSpeed: 50, increment: 5, targetSpeed: 100 };
+    p.startProgressive(settings, range);
+    const before = structuredClone(p);
+    for (const invalid of [{ firstBar: 0 }, { lastBar: 0 }, { firstBar: 1.5 }, { startSpeed: 24 }, { targetSpeed: 201 }, { targetSpeed: 49 }, { increment: 0 }, { increment: NaN }]) {
+      expect(() => p.startProgressive({ ...settings, ...invalid }, range)).toThrow();
+      expect(p).toEqual(before);
+    }
+    expect(() => p.startProgressive(settings, { startTick: 0, endTick: NaN })).toThrow();
+    expect(p).toEqual(before);
+  });
+  it('uses the increased speed for each count-in and supports fractional increases', () => {
+    const p = new PracticeState();
+    p.startProgressive({ firstBar: 1, lastBar: 1, startSpeed: 50, increment: 2.5, targetSpeed: 100 }, { startTick: 0, endTick: 3840 });
+    const first = countInPlan(6, 8, 140, 2, p.speed);
+    p.completePass();
+    expect(p.speed).toBe(52.5);
+    expect(countInPlan(6, 8, 140, 2, p.speed).durationMs).toBeCloseTo(first.durationMs * 50 / 52.5);
+  });
   it('clamps audio-buffer overshoot to the exact musical loop boundary', () => {
     const range = { startTick: 3840, endTick: 7680 };
     expect(clampLoopTick(7689, range)).toBe(7680);
@@ -252,6 +282,9 @@ describe('practice timing', () => {
     for (const n of [50,60,70,80,90,100,110,120,77]) { p.setSpeed(n); expect(p.speed).toBe(n); }
     expect(() => p.setSpeed(NaN)).toThrow(); expect(() => p.setSpeed(0)).toThrow();
     p.metronome = true; p.countIn = 2; expect(e.song).toEqual(before); expect(exportMidi(e.song)).toEqual(midi);
+    p.startProgressive({ firstBar: 1, lastBar: 2, startSpeed: 50, increment: 5, targetSpeed: 100 }, { startTick: 0, endTick: 7680 });
+    p.completePass(); p.completePass();
+    expect(e.song).toEqual(before); expect(exportMidi(e.song)).toEqual(midi);
   });
   it('shares exact exclusive loop boundaries across selection and A-B state', () => {
     const p = new PracticeState(); p.setLoop({ startTick: 3840, endTick: 11520 }, 'selection');
@@ -288,5 +321,9 @@ describe('practice timing', () => {
   });
   it('integrates tempo changes within the playback timeline', () => {
     expect(elapsedMs([{...bars[0],tempos:[{tick:0,tempo:120},{tick:1920,tempo:60}]}],0,3840,100)).toBe(3000);
+  });
+  it('does not schedule clicks beyond a progressive pass or into its next count-in', () => {
+    expect(clickPlan(bars, 4750, 50, 1000, { startTick: 3840, endTick: 4800 }, false)).toEqual([]);
+    expect(clickPlan(bars, 4320, 55, 1000, { startTick: 3840, endTick: 4800 }, false).map(c => [c.tick, c.cycle])).toEqual([[4320, 0]]);
   });
 });

@@ -1,6 +1,13 @@
 import type { Song } from '../model/song';
 
 export interface LoopRange { startTick: number; endTick: number }
+export interface ProgressiveSettings {
+  firstBar: number;
+  lastBar: number;
+  startSpeed: number;
+  increment: number;
+  targetSpeed: number;
+}
 /** Audio buffers may report a few ticks past a gated range; the musical playhead ends at B. */
 export function clampLoopTick(tick: number, range: LoopRange | null) {
   return range ? Math.max(range.startTick, Math.min(range.endTick, tick)) : tick;
@@ -10,7 +17,9 @@ export class PracticeState {
   metronome = false;
   countIn: 0 | 1 | 2 = 0;
   loop: LoopRange | null = null;
-  loopSource: 'selection' | 'ab' | null = null;
+  loopSource: 'selection' | 'ab' | 'practice' | null = null;
+  progressive: ProgressiveSettings | null = null;
+  completedPasses = 0;
   a: number | null = null;
   b: number | null = null;
   looping = false;
@@ -18,15 +27,35 @@ export class PracticeState {
     if (!Number.isFinite(percent) || percent < 25 || percent > 200) throw new Error('Speed must be between 25% and 200%.');
     this.speed = percent;
   }
-  setLoop(range: LoopRange, source: 'selection' | 'ab') {
-    if (range.startTick < 0 || range.endTick <= range.startTick) throw new Error('Loop end must follow loop start.');
+  setLoop(range: LoopRange, source: 'selection' | 'ab' | 'practice') {
+    if (!Number.isFinite(range.startTick) || !Number.isFinite(range.endTick) || range.startTick < 0 || range.endTick <= range.startTick) throw new Error('Loop end must follow loop start.');
     this.loop = { ...range }; this.loopSource = source; this.looping = true;
+    if (source !== 'practice') { this.progressive = null; this.completedPasses = 0; }
+  }
+  startProgressive(settings: ProgressiveSettings, range: LoopRange) {
+    const { firstBar, lastBar, startSpeed, increment, targetSpeed } = settings;
+    if (!Number.isInteger(firstBar) || !Number.isInteger(lastBar) || firstBar < 1 || lastBar < firstBar) throw new Error('Choose consecutive bars in order.');
+    if (![startSpeed, increment, targetSpeed].every(Number.isFinite) || startSpeed < 25 || targetSpeed > 200 || targetSpeed < startSpeed || increment <= 0 || increment > 175) throw new Error('Choose speeds between 25% and 200%, a positive increase, and a target at or above the starting speed.');
+    this.setLoop(range, 'practice');
+    this.progressive = { ...settings };
+    this.resetProgress();
+  }
+  completePass() {
+    if (!this.progressive || !this.looping) return;
+    this.completedPasses++;
+    const p = this.progressive;
+    // Calculate from the starting speed to avoid accumulating fractional rounding errors.
+    this.speed = Math.round(Math.min(p.targetSpeed, p.startSpeed + this.completedPasses * p.increment) * 100) / 100;
+  }
+  resetProgress() {
+    this.completedPasses = 0;
+    if (this.progressive) this.speed = this.progressive.startSpeed;
   }
   enableAB() {
     if (this.a === null || this.b === null) throw new Error('Set both A and B at the caret first. B is the exclusive end.');
     this.setLoop({ startTick: this.a, endTick: this.b }, 'ab');
   }
-  clearLoop() { this.loop = null; this.loopSource = null; this.looping = false; this.a = this.b = null; }
+  clearLoop() { this.loop = null; this.loopSource = null; this.looping = false; this.a = this.b = null; this.progressive = null; this.completedPasses = 0; }
 }
 
 export function tempoAtBar(song: Song, bar: number) {

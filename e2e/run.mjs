@@ -12,6 +12,7 @@ import { guitarWorkflows } from './guitar.mjs';
 import { scoreInteractions } from './score-interaction.mjs';
 import { multiTrackWorkflows } from './multi-track.mjs';
 import { tuningWorkflows } from './tunings.mjs';
+import { practiceWorkflows } from './practice.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const out = path.join(root, 'e2e/out');
@@ -834,6 +835,7 @@ await guitarWorkflows({launch,closeApp,step,waitIdle,out,root});
 await scoreInteractions({launch,closeApp,step,waitIdle,out,root,tabPoint});
 await multiTrackWorkflows({launch,closeApp,step,waitIdle,out,root});
 await tuningWorkflows({launch,closeApp,step,waitIdle,out,root});
+await practiceWorkflows({launch,closeApp,step,waitIdle,out,root});
 console.log(failures ? `\n${failures} FAILED` : '\nall e2e checks passed');
 fs.rmSync(profile, { recursive: true, force: true });
 process.exit(failures ? 1 : 0);

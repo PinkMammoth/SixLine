@@ -22,7 +22,7 @@ export function elapsedMs(bars: ClickBar[], start: number, end: number, speed: n
   }
   return ms * 100 / speed;
 }
-export function clickPlan(bars: ClickBar[], tick: number, speed: number, horizonMs = 140, loop: LoopRange | null = null) {
+export function clickPlan(bars: ClickBar[], tick: number, speed: number, horizonMs = 140, loop: LoopRange | null = null, wrap = true) {
   // The synth's time-to-tick conversion rounds a bar/beat boundary up by one tick.
   const current = bars.find(b => b.start <= tick && tick < b.end);
   if (current) {
@@ -46,7 +46,7 @@ export function clickPlan(bars: ClickBar[], tick: number, speed: number, horizon
     }
   };
   add(tick, loop?.endTick ?? Infinity, 0, 0);
-  if (loop && tick < loop.endTick) {
+  if (wrap && loop && tick < loop.endTick) {
     const delay = elapsedMs(bars, tick, loop.endTick, speed);
     if (delay <= horizonMs) add(loop.startTick, loop.endTick, delay, 1);
   }
@@ -65,7 +65,7 @@ export class Metronome {
     for (const { node } of this.scheduled.values()) { try { node.stop(); } catch { /* finished */ } }
     this.scheduled.clear(); this.lastTick = -1; this.cycle = 0;
   }
-  update(bars: ClickBar[], tick: number, speed: number, loop: LoopRange | null, seek = false) {
+  update(bars: ClickBar[], tick: number, speed: number, loop: LoopRange | null, seek = false, wrap = true) {
     const ctx = this.context;
     if (!ctx || ctx.state !== 'running') return;
     const wrapped = !!loop && this.lastTick >= loop.endTick - 1 && tick <= loop.startTick + 1;
@@ -77,7 +77,7 @@ export class Metronome {
     }
     this.lastTick = tick;
     for (const [key, value] of this.scheduled) if (value.time < ctx.currentTime - 0.3) this.scheduled.delete(key);
-    for (const click of clickPlan(bars, tick, speed, 140, loop)) {
+    for (const click of clickPlan(bars, tick, speed, 140, loop, wrap)) {
       const key = `${this.cycle + click.cycle}:${click.tick}`;
       if (this.scheduled.has(key)) continue;
       const time = ctx.currentTime + click.delayMs / 1000;

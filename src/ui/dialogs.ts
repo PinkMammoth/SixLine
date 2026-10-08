@@ -2,6 +2,7 @@
 import { createTrack, DEFAULT_PROGRAMS, type Track, type TrackType, type NoteEffects } from '../model/song';
 import { GM_PROGRAMS } from '../model/gm';
 import { TUNING_PRESETS, presetsFor, resizeTuning, stringCounts } from '../model/tunings';
+import type { ProgressiveSettings } from '../playback/practice';
 export { TUNING_PRESETS };
 
 type Field =
@@ -81,6 +82,30 @@ const TYPES: [TrackType, string][] = [
 export async function measureDialog(current: number, max: number) {
   const r = await form('Go to measure', [{ name: 'measure', label: 'Measure', type: 'number', value: current, min: 1, max }]);
   return r ? Number(r.measure) : null;
+}
+
+export async function practiceDialog(settings: ProgressiveSettings, max: number, metronome: boolean, countIn: 0 | 1 | 2) {
+  const r = await form('Practice bars', [
+    { name: 'firstBar', label: 'First bar', type: 'number', value: settings.firstBar, min: 1, max },
+    { name: 'lastBar', label: 'Last bar (included)', type: 'number', value: settings.lastBar, min: 1, max },
+    { name: 'startSpeed', label: 'Starting speed (%)', type: 'number', value: settings.startSpeed, min: 25, max: 200, step: 0.01 },
+    { name: 'increment', label: 'Increase per pass (percentage points)', type: 'number', value: settings.increment, min: 0.01, max: 175, step: 0.01 },
+    { name: 'targetSpeed', label: 'Target speed (%)', type: 'number', value: settings.targetSpeed, min: 25, max: 200, step: 0.01 },
+    { name: 'metronome', label: 'Click track', type: 'select', value: metronome ? '1' : '0', options: [['0', 'Off'], ['1', 'On']] },
+    { name: 'countIn', label: 'Count-in before every pass', type: 'select', value: String(countIn), options: [['0', 'Off'], ['1', '1 bar'], ['2', '2 bars']] },
+  ], f => {
+    const input = (name: string) => f.elements.namedItem(name) as HTMLInputElement;
+    f.querySelectorAll('input').forEach(el => el.required = true);
+    input('lastBar').setCustomValidity(Number(input('lastBar').value) < Number(input('firstBar').value) ? 'Last bar must be at or after the first bar.' : '');
+    input('targetSpeed').setCustomValidity(Number(input('targetSpeed').value) < Number(input('startSpeed').value) ? 'Target speed must be at or above the starting speed.' : '');
+    if (!f.querySelector('.practice-help')) {
+      const help = document.createElement('p'); help.className = 'practice-help';
+      help.textContent = 'For example: 50% → 55% → 60%. Looping continues at the target speed. Stop resets the speed; Pause keeps your progress.';
+      f.querySelector('.buttons')!.before(help);
+      f.querySelector('button[value=ok]')!.textContent = 'Start practice';
+    }
+  });
+  return r ? { settings: { firstBar: Number(r.firstBar), lastBar: Number(r.lastBar), startSpeed: Number(r.startSpeed), increment: Number(r.increment), targetSpeed: Number(r.targetSpeed) }, metronome: r.metronome === '1', countIn: Number(r.countIn) as 0 | 1 | 2 } : null;
 }
 
 export async function markerDialog(current: string) {

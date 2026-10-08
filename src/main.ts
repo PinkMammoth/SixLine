@@ -10,7 +10,7 @@ import { importDialog, reportDialog } from './ui/importDialog';
 import { initialFile, onOpenFile, openFile, saveFile, type OpenedFile } from './platform/host';
 import { buildMenus, type MenuDef } from './ui/menu';
 import { locateCaret } from './ui/caret';
-import { newSongDialog, pitchName, timeSignatureDialog, trackDialog, unsavedDialog, measureDialog, markerDialog, bendDialog, slideDialog, harmonicDialog } from './ui/dialogs';
+import { newSongDialog, pitchName, timeSignatureDialog, trackDialog, unsavedDialog, measureDialog, practiceDialog, markerDialog, bendDialog, slideDialog, harmonicDialog } from './ui/dialogs';
 import { selectionRange } from './editor/selection';
 import type { Passage } from './editor/clipboard';
 import { PracticeState, CountIn, tempoAtBar, clampLoopTick } from './playback/practice';
@@ -62,6 +62,10 @@ const metronome = new Metronome();
 let clickBars: ClickBar[] = [];
 let pendingAudio = false;
 let resumePlayback: { tick: number; playing: boolean } | null = null;
+let practiceEpoch = 0;
+let practicePlayback = false;
+let practicePassArmed = false;
+let practiceRestart: { doc: Doc; epoch: number } | null = null;
 type DrumMode = 'letters' | 'numbers';
 type DrumView = 'notation' | 'numbers';
 type TrackView = 'single' | 'multi';
@@ -116,8 +120,21 @@ api.renderFinished.on(() => {
 });
 api.playerStateChanged.on((e) => {
   playerState = e.state;
+  if (e.state === 1 && practicePlayback && active.practice.progressive) practicePassArmed = true;
+  // AlphaTab emits Finished before its own Stop. Restart only after that Stop has arrived.
+  if (e.state === 0 && practiceRestart) {
+    const pending = practiceRestart;
+    practiceRestart = null;
+    setTimeout(() => {
+      if (pending.doc !== active || pending.epoch !== practiceEpoch || !practicePlayback || !active.practice.progressive || !active.practice.looping) return;
+      active.practice.completePass();
+      applyPractice();
+      api.tickPosition = active.practice.loop!.startTick;
+      startPlayback(false);
+    }, 0);
+  }
   if (e.state !== 1) metronome.cancel();
-  else if (active.practice.metronome) metronome.update(clickBars, api.tickPosition, active.practice.speed, active.practice.looping ? active.practice.loop : null);
+  else if (active.practice.metronome) metronome.update(clickBars, api.tickPosition, active.practice.speed, active.practice.looping ? active.practice.loop : null, false, !active.practice.progressive);
   const mode = e.state === 1 && !numberScoreVisible() ? at.ScrollMode.Continuous : at.ScrollMode.Off;
   if (api.settings.player.scrollMode !== mode) {
     api.settings.player.scrollMode = mode;
@@ -142,7 +159,7 @@ api.playerPositionChanged.on((e) => {
   }
   $('time').textContent = `${fmtTime(e.currentTime)} / ${fmtTime(e.endTime)}`;
   updateTransportButtons();
-  if (playerState === 1 && active.practice.metronome) metronome.update(clickBars, e.currentTick, active.practice.speed, active.practice.looping ? active.practice.loop : null, e.isSeek);
+  if (playerState === 1 && active.practice.metronome && (!active.practice.progressive || practicePassArmed)) metronome.update(clickBars, e.currentTick, active.practice.speed, active.practice.looping ? active.practice.loop : null, e.isSeek, !active.practice.progressive);
 });
 // PlayerReady covers MIDI regeneration without AlphaTab 1.8's recursive loadedMidiInfo getter.
 api.playerReady.on(() => {
@@ -157,7 +174,13 @@ api.playerReady.on(() => {
   updateTransportButtons();
 });
 api.soundFontLoaded.on(() => updateStatus());
-api.playerFinished.on(() => { if (!active.practice.looping) active.transport.stopped(); });
+api.playerFinished.on(() => {
+  if (practicePassArmed && practicePlayback && active.practice.progressive && active.practice.looping) {
+    practicePassArmed = false;
+    metronome.cancel();
+    practiceRestart = { doc: active, epoch: practiceEpoch };
+  } else if (!active.practice.looping) active.transport.stopped();
+});
 api.error.on((e) => {
   console.error('alphaTab error', e);
   setMessage('Error: ' + (e as Error).message);
@@ -178,6 +201,11 @@ function newDoc(song: Song, filePath: string | null, fileName: string): Doc {
     pendingStructural ||= c.structural;
     pendingReset ||= !!c.reset;
     pendingAudio ||= c.audio !== false;
+    if (c.audio !== false && active.practice.progressive) {
+      endPractice();
+      resumePlayback = { tick: api.tickPosition, playing: false };
+      setMessage('Practice ended because the music changed. Choose the bars again to restart.');
+    }
     if (c.audio !== false && countIn.active) { countIn.cancel(); updateToolbar(); }
     scheduleRender();
   });
@@ -199,6 +227,8 @@ function activate(doc: Doc) {
   if (doc === active && editor === doc.editor && score) return;
   active.scrollTop = $('score').scrollTop;
   scorePointer?.cancel();
+  cancelPracticePlayback();
+  active.practice.resetProgress();
   api.stop();
   countIn.cancel();
   metronome.cancel();
@@ -312,7 +342,7 @@ function flushRender() {
   // Only a document change needs a new alphaTab Score. Showing another track re-renders the same Score,
   // which alphaTab treats as a view change and leaves the player (and playback position) alone.
   if (docChanged) {
-    if (score && !reset) resumePlayback = { tick: api.tickPosition, playing: playerState === 1 };
+    if (score && !reset && !resumePlayback) resumePlayback = { tick: api.tickPosition, playing: playerState === 1 };
     score = songToScore(editor.song, api.settings);
   } else if (score) {
     // Rehearsal labels affect engraving only; retain the score identity and its player.
@@ -613,12 +643,14 @@ async function editTimeSignature() {
 // ------------------------------------------------------------------ playback
 
 function playPause() {
-  if (countIn.active) { countIn.cancel(); updateToolbar(); return; }
-  if (playerState === 1) api.pause();
+  if (countIn.active || practiceRestart) { cancelPracticePlayback(); updateToolbar(); return; }
+  if (playerState === 1) { cancelPracticePlayback(); api.pause(); }
   else startPlayback(active.transport.fromCaret);
 }
 function stop() {
-  countIn.cancel();
+  cancelPracticePlayback();
+  active.practice.resetProgress();
+  applyPractice();
   resumePlayback = null;
   api.stop();
   active.transport.stopped();
@@ -655,6 +687,7 @@ function moveTransport(direction: 'first' | -1 | 1) {
     const target = transportDestination(api.tickCache?.masterBars ?? [],transportTick(),direction);
     countIn.cancel(); resumePlayback = null;
     const p = active.practice;
+    if (p.progressive) endPractice();
     if (p.looping && p.loop && (target.tick < p.loop.startTick || target.tick >= p.loop.endTick)) { p.looping = false; applyPractice(); }
     editor.setCursor({bar:target.bar,beat:0});
     api.tickPosition = target.tick;
@@ -681,6 +714,7 @@ function loopSelection() {
     const endTick = s.kind === 'measures' ? api.tickCache.getMasterBar(score.masterBars[end.bar]).end : api.tickCache.getBeatStart(last) + last.playbackDuration;
     const outside = api.tickCache.masterBars.some(b => b.start >= startTick && b.start < endTick && (b.masterBar.index < start.bar || b.masterBar.index > end.bar));
     if (outside) throw new Error('This range crosses a repeat into unselected measures. Select one continuous playback passage.');
+    if (active.practice.progressive) endPractice();
     active.practice.setLoop({ startTick, endTick }, 'selection');
     applyPractice(); updateToolbar();
   });
@@ -688,6 +722,7 @@ function loopSelection() {
 function toggleLoop() {
   command(() => {
     const p = active.practice;
+    if (p.progressive) { endPractice(); return; }
     if (!p.loop) throw new Error('Use Loop Selection or set A and B first.');
     p.looping = !p.looping; applyPractice(); updateToolbar();
   });
@@ -695,38 +730,95 @@ function toggleLoop() {
 function setLoopPoint(which: 'a' | 'b') {
   command(() => { active.practice[which] = caretTick(); updateToolbar(); });
 }
-function enableAB() { command(() => { active.practice.enableAB(); applyPractice(); updateToolbar(); }); }
-function clearLoop() { active.practice.clearLoop(); applyPractice(); updateToolbar(); }
+function enableAB() {
+  command(() => {
+    const p = active.practice, a = p.a, b = p.b;
+    if (a === null || b === null || b <= a) throw new Error('Set A and B at the caret first. B must follow A and is the exclusive end.');
+    if (p.progressive) { endPractice(); p.a = a; p.b = b; }
+    p.enableAB(); applyPractice(); updateToolbar();
+  });
+}
+function clearLoop() { if (active.practice.progressive) { endPractice(); return; } active.practice.clearLoop(); applyPractice(); updateToolbar(); }
 function applyPractice() {
   const p = active.practice;
   api.playbackSpeed = p.speed / 100;
   api.metronomeVolume = 0;
   api.countInVolume = 0;
   api.playbackRange = p.looping && p.loop ? Object.assign(new at.synth.PlaybackRange(), p.loop) : null;
-  api.isLooping = p.looping;
+  api.isLooping = p.looping && !p.progressive;
 }
 function startPlayback(fromCaret: boolean) {
   command(() => {
     if (!api.isReadyForPlayback || renderQueued || rendering) throw new Error('Playback is still loading.');
-    countIn.cancel();
+    cancelPracticePlayback();
     if (fromCaret) {
       if (playerState === 1) api.pause();
       api.tickPosition = playbackCaretTick();
     }
     const p = active.practice;
+    practicePlayback = !!p.progressive && p.looping;
     if (p.metronome) metronome.ready().catch(e => setMessage('Metronome failed: ' + e.message));
     if (p.looping && p.loop && (api.tickPosition < p.loop.startTick || api.tickPosition >= p.loop.endTick)) api.tickPosition = p.loop.startTick;
     const startTick = api.tickPosition;
+    const doc = active, epoch = practiceEpoch;
     const lookup = api.tickCache?.masterBars.find(b => b.start <= startTick && startTick < b.end);
     const bar = lookup?.masterBar.index ?? editor.cursor.bar;
     const mb = editor.song.masterBars[bar];
     const tempo = lookup?.tempoChanges.filter(t => t.tick <= startTick).at(-1)?.tempo ?? tempoAtBar(editor.song, bar);
     if (p.countIn) {
       setMessage(`Count-in: ${p.countIn} bar${p.countIn === 1 ? '' : 's'}`);
-      countIn.start(mb.num, mb.den, tempo, p.countIn, () => p.speed, () => { api.tickPosition = startTick; api.play(); updateToolbar(); }).catch(e => { countIn.cancel(); setMessage('Count-in failed: ' + e.message); updateToolbar(); });
-      updateToolbar();
+      countIn.start(mb.num, mb.den, tempo, p.countIn, () => p.speed, () => { if (doc !== active || epoch !== practiceEpoch) return; api.tickPosition = startTick; api.play(); updateToolbar(); }).catch(e => { if (doc !== active || epoch !== practiceEpoch) return; cancelPracticePlayback(); setMessage('Count-in failed: ' + e.message); updateToolbar(); });
     } else api.play();
+    updateToolbar();
     active.transport.usePosition();
+  });
+}
+/** Cancel scheduled restarts as well as pre-roll, so paused/stopped playback stays stopped. */
+function cancelPracticePlayback() {
+  practiceEpoch++;
+  practicePlayback = false;
+  practicePassArmed = false;
+  practiceRestart = null;
+  countIn.cancel();
+  metronome.cancel();
+}
+function endPractice() {
+  cancelPracticePlayback();
+  resumePlayback = null;
+  api.stop();
+  active.practice.clearLoop();
+  applyPractice();
+  active.transport.stopped();
+  updateToolbar();
+}
+async function configurePractice() {
+  const doc = active, ed = editor;
+  const selected = ed.selection ? selectionRange(ed.song, ed.selection) : null;
+  const current = doc.practice.progressive;
+  const settings = {
+    firstBar: selected ? selected.start.bar + 1 : current?.firstBar ?? ed.cursor.bar + 1,
+    lastBar: selected ? selected.end.bar + 1 : current?.lastBar ?? ed.cursor.bar + 1,
+    startSpeed: current?.startSpeed ?? 50,
+    increment: current?.increment ?? 5,
+    targetSpeed: current?.targetSpeed ?? 100,
+  };
+  const r = await practiceDialog(settings, ed.song.masterBars.length, doc.practice.metronome, doc.practice.countIn);
+  if (!r || doc !== active) return;
+  command(() => {
+    if (!score || !api.tickCache || !api.isReadyForPlayback || rendering || renderQueued) throw new Error('Playback is still loading.');
+    const { firstBar, lastBar } = r.settings;
+    if (lastBar > ed.song.masterBars.length) throw new Error('The chosen bars no longer exist.');
+    const startTick = api.tickCache.getMasterBar(score.masterBars[firstBar - 1]).start;
+    const endTick = api.tickCache.getMasterBar(score.masterBars[lastBar - 1]).end;
+    const outside = api.tickCache.masterBars.some(b => b.start >= startTick && b.start < endTick && (b.masterBar.index < firstBar - 1 || b.masterBar.index > lastBar - 1));
+    if (outside) throw new Error('This range crosses a repeat into unselected bars. Choose one continuous playback passage.');
+    stop();
+    doc.practice.startProgressive(r.settings, { startTick, endTick });
+    doc.practice.metronome = r.metronome;
+    doc.practice.countIn = r.countIn;
+    applyPractice();
+    api.tickPosition = startTick;
+    startPlayback(false);
   });
 }
 async function goToMeasure() {
@@ -953,6 +1045,7 @@ const menus: MenuDef[] = [
       { label: 'Play from caret / selection', key: 'Ctrl+Space', run: () => startPlayback(true) },
       { label: 'Stop', run: stop },
       null,
+      { label: 'Practice bars…', run: configurePractice },
       { label: 'Loop Selection', key: 'Ctrl+L', run: loopSelection },
       { label: 'Enable / Disable loop', run: toggleLoop },
       { label: 'Set A at caret', run: () => setLoopPoint('a') },
@@ -1016,8 +1109,10 @@ function buildToolbar() {
   const practice = document.createElement('div');
   practice.id = 'practicebar';
   practice.innerHTML = `<button id="b-caret" title="Play from caret / selection (Ctrl+Space)">Play here</button>
-    <label>Speed <input id="speed" type="number" min="25" max="200" step="10" value="100" list="speeds">%</label>
+    <label>Speed <input id="speed" type="number" min="25" max="200" step="0.01" value="100" list="speeds">%</label>
     <datalist id="speeds">${[50,60,70,80,90,100,110,120].map(n => `<option value="${n}"></option>`).join('')}</datalist>
+    <button id="b-practice" title="Loop consecutive bars, increasing speed after each pass">Practice bars…</button>
+    <button id="b-end-practice" hidden>End practice</button><span id="practice-progress" role="status" hidden></span>
     <button id="b-loop-selection" title="Loop Selection (Ctrl+L)">Loop selection</button>
     <button id="b-loop" title="Enable / Disable saved loop">Loop off</button>
     <button id="b-a" title="Set A at caret">A</button><button id="b-b" title="Set B at caret (exclusive end)">B</button>
@@ -1028,6 +1123,8 @@ function buildToolbar() {
     <button id="b-marker" title="Add / Rename section marker">Marker…</button>`;
   tb.after(practice);
   $('b-caret').onclick = () => startPlayback(true);
+  $('b-practice').onclick = configurePractice;
+  $('b-end-practice').onclick = endPractice;
   $('b-loop-selection').onclick = loopSelection;
   $('b-loop').onclick = toggleLoop;
   $('b-a').onclick = () => setLoopPoint('a'); $('b-b').onclick = () => setLoopPoint('b');
@@ -1053,7 +1150,7 @@ function buildToolbar() {
   $('b-redo').onclick = () => editor.redo();
   tb.querySelectorAll<HTMLButtonElement>('[data-dur]').forEach((b) => (b.onclick = () => editor.setDuration(Number(b.dataset.dur) as Duration)));
   const seek = $<HTMLInputElement>('seek');
-  seek.oninput = () => { countIn.cancel(); active.transport.usePosition(); api.timePosition = Number(seek.value); updateToolbar(); };
+  seek.oninput = () => { if (active.practice.progressive) endPractice(); countIn.cancel(); active.transport.usePosition(); api.timePosition = Number(seek.value); updateToolbar(); };
   $('tsig').onclick = editTimeSignature;
   $('tsig').title = 'Time signature (click to change)';
   const tempo = $<HTMLInputElement>('tempo');
@@ -1106,9 +1203,16 @@ function updateToolbar() {
   $<HTMLButtonElement>('b-redo').disabled = !editor.canRedo;
   const p = active.practice;
   if (document.activeElement !== $('speed')) $<HTMLInputElement>('speed').value = String(p.speed);
+  $<HTMLInputElement>('speed').disabled = !!p.progressive;
+  $('b-end-practice').hidden = !p.progressive;
+  $('practice-progress').hidden = !p.progressive;
+  if (p.progressive) {
+    const c = p.progressive;
+    $('practice-progress').textContent = `Bars ${c.firstBar}–${c.lastBar} · Pass ${p.completedPasses + 1} · ${p.speed}%${p.speed >= c.targetSpeed ? ' (target)' : ` → ${c.targetSpeed}%`} ${countIn.active ? '· Count-in' : ''}`;
+  }
   $<HTMLInputElement>('metronome').checked = p.metronome;
   $<HTMLSelectElement>('count-in').value = String(p.countIn);
-  $('b-loop').textContent = p.looping ? `Loop ${p.loopSource === 'ab' ? 'A-B' : 'selection'}` : 'Loop off';
+  $('b-loop').textContent = p.looping ? `Loop ${p.loopSource === 'ab' ? 'A-B' : p.progressive ? 'practice' : 'selection'}` : 'Loop off';
   $('b-loop').classList.toggle('on', p.looping);
   $('b-a').classList.toggle('on', p.a !== null); $('b-b').classList.toggle('on', p.b !== null);
   $('b-a').title = `Set A at caret${p.a === null ? '' : ` (tick ${p.a})`}`;
