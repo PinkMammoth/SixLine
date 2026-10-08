@@ -24,7 +24,7 @@ interface Options {
   surface: HTMLElement;
   scroller: HTMLElement;
   getEditor: () => Editor;
-  hitTest: (x: number, y: number, nearest: boolean) => Cursor | null;
+  hitTest: (x: number, y: number, nearest: boolean, lockedTrack?: number) => Cursor | null;
   choosePlayback: () => void;
   finished: () => void;
 }
@@ -37,7 +37,7 @@ export function bindScoreSelection({surface,scroller,getEditor,hitTest,choosePla
     const g = gesture;
     if (!g) return;
     if (getEditor() !== g.editor || g.editor.cursor.track !== g.track) { cancel(); return; }
-    const hit = hitTest(g.x,g.y,true);
+    const hit = hitTest(g.x,g.y,true,g.track);
     if (!hit) return;
     const range = g.drag.update(g.x,g.y,hit);
     if (!range) return;
@@ -77,12 +77,13 @@ export function bindScoreSelection({surface,scroller,getEditor,hitTest,choosePla
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
     const editor = getEditor(), previous = editor.selection;
     const modifier = ev.ctrlKey || ev.metaKey;
-    const anchor = ev.shiftKey ? previous?.anchor ?? {bar:editor.cursor.bar,beat:editor.cursor.beat} : hit;
-    const kind = ev.shiftKey ? previous?.kind ?? 'beats' : modifier ? 'beats' : 'measures';
-    gesture = {pointer:ev.pointerId,editor,track:hit.track,drag:new ScoreDrag(anchor,kind,ev.shiftKey ? previous?.rows : undefined,ev.clientX,ev.clientY),x:ev.clientX,y:ev.clientY};
+    const extend = ev.shiftKey && hit.track === editor.cursor.track;
+    const anchor = extend ? previous?.anchor ?? {bar:editor.cursor.bar,beat:editor.cursor.beat} : hit;
+    const kind = extend ? previous?.kind ?? 'beats' : ev.shiftKey || modifier ? 'beats' : 'measures';
+    gesture = {pointer:ev.pointerId,editor,track:hit.track,drag:new ScoreDrag(anchor,kind,extend ? previous?.rows : undefined,ev.clientX,ev.clientY),x:ev.clientX,y:ev.clientY};
     surface.setPointerCapture(ev.pointerId);
     choosePlayback();
-    editor.setCursor(hit,ev.shiftKey,ev.shiftKey ? previous?.kind ?? 'beats' : 'beats');
+    editor.setCursor(hit,extend,extend ? previous?.kind ?? 'beats' : 'beats');
     if (modifier) {
       editor.toggleSelectionRow(editor.track.type === 'guitar' || editor.track.type === 'bass' ? hit.string : editor.rowPitch(),previous);
       gesture.drag.rows = editor.selection?.rows;

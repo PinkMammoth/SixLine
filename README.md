@@ -44,7 +44,7 @@ npm run test:e2e  # builds, then drives the real Electron app with Playwright
 
 - **Document model** (`src/model`): plain JSON `Song → MasterBar[] + Track[] → Measure → voices → Beat → Note`. Renderer-independent. This is the source of truth.
 - **Editor** (`src/editor/editor.ts`): cursor + all mutations. Every edit goes through `Editor.edit()`, which takes a snapshot of the touched measure (or of the whole song for structural edits), so undo and redo are generic.
-- **alphaTab bridge** (`src/io/alphatab.ts`): GP3/4/5 bytes → alphaTab `Score` → our `Song` (import). For rendering and playback, our `Song` → a fresh alphaTab `Score` → `api.renderScore(score, [track], { firstChangedMasterBar })`. alphaTab regenerates the playback MIDI when it gets a new score.
+- **alphaTab bridge** (`src/io/alphatab.ts`): GP3/4/5 bytes → alphaTab `Score` → our `Song` (import). For rendering and playback, our `Song` → a fresh alphaTab `Score` → `api.renderScore(score, trackIndices, { firstChangedMasterBar })`. alphaTab regenerates the playback MIDI when it gets a new score.
 - **Project format** (`src/io/project.ts`): `.tabproj` = `{ format, version, song }` JSON with a migration table.
 - **Shell** (`electron/`): window, native file dialogs, file read/write. Nothing else. The UI is in-window HTML (`src/main.ts`, `src/ui`).
 
@@ -142,6 +142,8 @@ Common GM keys: `35` acoustic kick, `36` kick, `38` snare, `40` electric snare, 
 The current pitch or kit piece is shown in the status bar. Pick a GM instrument with F6.
 
 Each open song is a tab; opening a file adds a tab (an untouched Untitled tab is replaced, and a file that is already open is just focused). Closing or quitting with unsaved changes asks first.
+
+Click the toolbar's **Multi-track** button to show every instrument together in an aligned score; click it again to return to the selected track. The highlighted button indicates multi-track view, and the choice persists on this desktop. Click a staff or choose a track in the sidebar to make it active for editing. Drag selections stay on the instrument where the drag began. View changes preserve the song, selection and playback position, including during playback. The combined score uses drum notation; returning to single-track view restores the preferred drum score view.
 
 Clicking a bar or note chooses the next Play/Space start without seeking during playback. Click and drag to select complete bars, including when dragging backwards or across score rows; the score scrolls automatically at its edges. Shift-click or Shift-drag extends a beat range (or the existing measure selection). Escape clears the selection. Ctrl-click selects string/pitch rows; additional Ctrl-clicks toggle rows inside the range. The Edit menu also selects beats, chords, notes and measures. Click the time signature in the toolbar to change it from the current bar on. Add or remove tracks from the Track menu.
 

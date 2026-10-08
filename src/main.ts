@@ -42,7 +42,7 @@ let editor = active.editor;
 /** Scroll position to restore after the next render (when switching tabs). */
 let restoreScroll: number | null = null;
 let score: at.model.Score | null = null;
-let renderedTrack = -1;
+let renderedTracks: number[] = [];
 let pendingFirstBar: number | null = null;
 let pendingStructural = false;
 let pendingReset = false;
@@ -64,15 +64,19 @@ let pendingAudio = false;
 let resumePlayback: { tick: number; playing: boolean } | null = null;
 type DrumMode = 'letters' | 'numbers';
 type DrumView = 'notation' | 'numbers';
+type TrackView = 'single' | 'multi';
 function preference(key: string, fallback: string) {
   try { return localStorage.getItem(key) ?? fallback; } catch { return fallback; }
 }
 let drumInput: DrumMode = preference('sixline.drumInput', 'letters') === 'numbers' ? 'numbers' : 'letters';
 let drumView: DrumView = preference('sixline.drumView', 'notation') === 'numbers' ? 'numbers' : 'notation';
+let trackView: TrackView = preference('sixline.trackView', 'single') === 'multi' ? 'multi' : 'single';
+let renderedTrackView: TrackView | null = null;
 let drumEntryTimer = 0;
 let fretEntryTimer = 0;
 let scorePointer: ReturnType<typeof bindScoreSelection> | undefined;
-const numberScoreVisible = () => editor.track.type === 'drums' && drumView === 'numbers';
+const numberScoreVisible = () => trackView === 'single' && editor.track.type === 'drums' && drumView === 'numbers';
+const visibleTracks = () => trackView === 'multi' ? editor.song.tracks.map((_, i) => i) : [editor.cursor.track];
 
 // ------------------------------------------------------------------ alphaTab
 
@@ -182,7 +186,8 @@ function newDoc(song: Song, filePath: string | null, fileName: string): Doc {
     if (nextCaret !== lastCaret && !countIn.active) doc.transport.chooseCaret(playerState === 1);
     lastCaret = nextCaret;
     if (ed !== editor) return;
-    if (editor.cursor.track !== renderedTrack) scheduleRender();
+    if (!renderedTracks.includes(editor.cursor.track)) scheduleRender();
+    renderTracks();
     updateCaret();
     updateStatus();
   });
@@ -204,7 +209,7 @@ function activate(doc: Doc) {
   editor.clearDrumDigits();
   applyPractice();
   score = null;
-  renderedTrack = -1;
+  renderedTracks = [];
   pendingReset = true;
   restoreScroll = doc.scrollTop;
   scheduleRender();
@@ -284,14 +289,16 @@ function flushRender() {
   if (!renderQueued || rendering) return;
   renderQueued = false;
   renderStart = performance.now();
-  const track = editor.cursor.track;
+  const tracks = visibleTracks();
+  const sameTracks = tracks.join(',') === renderedTracks.join(',');
+  const sameView = sameTracks && trackView === renderedTrackView;
   const docChanged = !score || pendingAudio;
-  const incremental = track === renderedTrack && !pendingStructural && pendingFirstBar !== null;
+  const incremental = sameView && !pendingReset && !pendingStructural && pendingFirstBar !== null;
   // Same document, track and shape (e.g. tempo, time signature, mixer changes): keep the current drawing on
   // screen while re-rendering instead of blanking it (flicker). alphaTab cannot do this across layout changes.
-  const beatShape = editor.track.measures.map(m => m.voices.map(v => v.length).join(',')).join(';');
+  const beatShape = tracks.map(i => editor.song.tracks[i].measures.map(m => m.voices.map(v => v.length).join(',')).join(';')).join('|');
   const shape = `${editor.song.tracks.length}:${editor.song.masterBars.length}:${beatShape}`;
-  const sameLayout = track === renderedTrack && !pendingReset && shape === renderedShape;
+  const sameLayout = sameView && !pendingReset && shape === renderedShape;
   const hints = incremental
     ? { reuseViewport: true, firstChangedMasterBar: pendingFirstBar! }
     : sameLayout
@@ -317,11 +324,12 @@ function flushRender() {
     score.tracks.forEach((t, i) => { t.name = editor.song.tracks[i].name; });
   }
   pendingAudio = false;
-  if (track !== renderedTrack && !reset) restoreScroll = $('score').scrollTop;
-  renderedTrack = track;
+  if (!sameView && !reset) restoreScroll = $('score').scrollTop;
+  renderedTracks = tracks;
+  renderedTrackView = trackView;
   updateDrumView(true);
   rendering = true;
-  api.renderScore(score!, [track], hints);
+  api.renderScore(score!, tracks, hints);
   renderTracks();
   updateToolbar();
 }
@@ -351,7 +359,7 @@ function updateSelection() {
   el.replaceChildren();
   if (numberScoreVisible()) { updateDrumSelection($('drumscore'), editor); return; }
   const s = editor.selection;
-  if (!s || s.track !== renderedTrack || !score || !api.boundsLookup) return;
+  if (!s || !renderedTracks.includes(s.track) || !score || !api.boundsLookup) return;
   const { start, end } = selectionRange(editor.song, s);
   for (let bar = start.bar; bar <= end.bar; bar++) {
     const beats = score.tracks[s.track].staves[0].bars[bar].voices[0].beats;
@@ -380,6 +388,14 @@ function updateSelection() {
       if (s.kind === 'measures') break;
     }
   }
+}
+
+function setTrackView(view: TrackView) {
+  scorePointer?.cancel();
+  trackView = view;
+  try { localStorage.setItem('sixline.trackView', view); } catch { /* preferences are optional */ }
+  updateToolbar();
+  scheduleRender();
 }
 
 function setDrumInput(mode: DrumMode) {
@@ -431,31 +447,38 @@ function scrollIntoView(b: { x: number; y: number; w: number; h: number }) {
 }
 
 // Clicking chooses the next playback start; dragging never seeks or rebuilds the player.
-function scoreHit(clientX: number, clientY: number, nearest: boolean) {
+function scoreHit(clientX: number, clientY: number, nearest: boolean, lockedTrack?: number) {
   if (numberScoreVisible()) return hitDrumScore($('drumscore'),editor,clientX,clientY,nearest);
   if (!api.boundsLookup || !score || rendering || renderQueued) return null;
   const r = $('at').getBoundingClientRect();
   const x = clientX - r.left, y = clientY - r.top;
-  let beat = api.boundsLookup.getBeatAtPos(x,y);
-  if (!beat && nearest) {
-    const distance = (value: number, start: number, length: number) => Math.max(start - value, 0, value - start - length);
+  const distance = (value: number, start: number, length: number) => Math.max(start - value, 0, value - start - length);
+  const hit = api.boundsLookup.getBeatAtPos(x,y);
+  let masterBar = hit ? api.boundsLookup.findMasterBar(hit.voice.bar.masterBar) : null;
+  if (!masterBar && nearest) {
     const systems = api.boundsLookup.staffSystems;
     const system = systems.reduce<typeof systems[number] | null>((best,s) => !best || distance(y,s.realBounds.y,s.realBounds.h) < distance(y,best.realBounds.y,best.realBounds.h) ? s : best,null);
-    const bar = system?.bars.reduce<typeof system.bars[number] | null>((best,b) => !best || distance(x,b.realBounds.x,b.realBounds.w) < distance(x,best.realBounds.x,best.realBounds.w) ? b : best,null);
-    if (bar) beat = score.tracks[editor.cursor.track].staves[0].bars[bar.index]?.voices[0].beats[0] ?? null;
+    masterBar = system?.bars.reduce<typeof system.bars[number] | null>((best,b) => !best || distance(x,b.realBounds.x,b.realBounds.w) < distance(x,best.realBounds.x,best.realBounds.w) ? b : best,null) ?? null;
   }
+  // alphaTab's hit test chooses a master bar by X and a score system by Y;
+  // it does not distinguish tracks. Choose the closest staff within that bar.
+  const staff = masterBar?.bars.filter(b => lockedTrack === undefined || b.bar.staff.track.index === lockedTrack)
+    .reduce<at.rendering.BarBounds | null>((best, b) => !best || distance(y, b.realBounds.y, b.realBounds.h) < distance(y, best.realBounds.y, best.realBounds.h) ? b : best, null);
+  if (!staff) return null;
+  const track = staff.bar.staff.track.index;
+  const tr = editor.song.tracks[track];
+  const bar = staff.bar.index;
+  const primary = score.tracks[track].staves[0].bars[bar].voices[0].beats;
+  let beat = primary[0];
   if (!beat) return null;
-  const bar = beat.voice.bar.index;
-  const primary = score.tracks[editor.cursor.track].staves[0].bars[bar].voices[0].beats;
   // Choose the primary-voice beat at this horizontal position, including bar whitespace.
   for (const candidate of primary) {
     const bounds = api.boundsLookup.findBeats(candidate);
     if (bounds?.length && (candidate.index === 0 || bounds[0].realBounds.x <= x)) beat = candidate;
   }
-  let string = editor.cursor.string;
-  const tr = editor.track;
+  let string = track === editor.cursor.track ? editor.cursor.string : isStringed(tr) ? 0 : editor.rowForPitch(tr.type === 'drums' ? 38 : 60, tr);
   const clickedNote = api.boundsLookup.getNoteAtPos(beat, x, y);
-  if (!isStringed(tr) && clickedNote) string = editor.rowForPitch(tr.type === 'drums' ? clickedNote.percussionArticulation : clickedNote.realValue);
+  if (!isStringed(tr) && clickedNote) string = editor.rowForPitch(tr.type === 'drums' ? clickedNote.percussionArticulation : clickedNote.realValue, tr);
   if (isStringed(tr) && clickedNote) string = tr.tuning.length - clickedNote.string;
   else if (isStringed(tr)) {
     // choose the nearest tab line
@@ -470,7 +493,7 @@ function scoreHit(clientX: number, clientY: number, nearest: boolean) {
       }
     }
   }
-  return {track:editor.cursor.track,bar,beat:Math.min(beat.index,editor.track.measures[bar].voices[0].length - 1),string};
+  return {track,bar,beat:Math.min(beat.index,tr.measures[bar].voices[0].length - 1),string};
 }
 scorePointer = bindScoreSelection({surface:$('sheet'),scroller:$('score'),getEditor:() => editor,hitTest:scoreHit,
   choosePlayback:() => {
@@ -981,6 +1004,7 @@ function buildToolbar() {
     <button id="b-undo" title="Undo (Ctrl+Z)">↶</button>
     <button id="b-redo" title="Redo (Ctrl+Y)">↷</button>
     <span class="sep"></span>
+    <button id="b-track-view" aria-pressed="false" title="Show all tracks together">Multi-track</button>
     <span id="trackname" class="lbl"></span>
     <span id="guitar-controls" hidden><button id="b-chord" title="Chord entry (Q): Tab/Enter next string, X mute/skip, Right next beat">Chord (Q)</button><span id="guitar-fx" class="lbl"></span></span>
     <span id="drum-controls" hidden>
@@ -988,6 +1012,7 @@ function buildToolbar() {
       <label>View <select id="drum-view" aria-label="Drum score view"><option value="notation">Notation</option><option value="numbers">MIDI numbers</option></select></label>
     </span>`;
   $('b-chord').onclick = () => command(() => editor.toggleChordEntry());
+  $('b-track-view').onclick = () => setTrackView(trackView === 'single' ? 'multi' : 'single');
   $<HTMLSelectElement>('drum-input').onchange = () => { setDrumInput($<HTMLSelectElement>('drum-input').value as DrumMode); $('drum-input').blur(); };
   $<HTMLSelectElement>('drum-view').onchange = () => { setDrumView($<HTMLSelectElement>('drum-view').value as DrumView); $('drum-view').blur(); };
   const practice = document.createElement('div');
@@ -1060,6 +1085,9 @@ function updateToolbar() {
   const mb = editor.song.masterBars[editor.cursor.bar];
   $('tsig').textContent = `${mb.num}/${mb.den}`;
   $('trackname').textContent = editor.track.name;
+  $('b-track-view').classList.toggle('on', trackView === 'multi');
+  $('b-track-view').setAttribute('aria-pressed', String(trackView === 'multi'));
+  $('b-track-view').title = trackView === 'multi' ? 'Show only the selected track' : 'Show all tracks together';
   $('guitar-controls').hidden = !isStringed(editor.track);
   $('b-chord').classList.toggle('on', editor.chordEntry);
   $('b-chord').textContent = editor.chordEntry ? 'Chord on (Q)' : 'Chord (Q)';
@@ -1069,7 +1097,9 @@ function updateToolbar() {
   $('guitar-fx').title = labels.join(' · ') + (fx?.bend ? ` · peak bend ${Math.max(...fx.bend.map(p => p.value)) / 2} semitones` : '') + (fx?.harmonic ? ` · touch node ${fx.harmonic.value}` : '');
   $('drum-controls').hidden = editor.track.type !== 'drums';
   $<HTMLSelectElement>('drum-input').value = drumInput;
-  $<HTMLSelectElement>('drum-view').value = drumView;
+  $<HTMLSelectElement>('drum-view').value = trackView === 'multi' ? 'notation' : drumView;
+  $<HTMLSelectElement>('drum-view').disabled = trackView === 'multi';
+  $('drum-view').title = trackView === 'multi' ? 'Multi-track view uses notation. Switch to single-track view for MIDI numbers.' : 'Drum score view';
   const beat = editor.beat;
   document.querySelectorAll<HTMLButtonElement>('[data-dur]').forEach((b) => b.classList.toggle('on', Number(b.dataset.dur) === beat.duration));
   $('b-dot').classList.toggle('on', beat.dots > 0);
